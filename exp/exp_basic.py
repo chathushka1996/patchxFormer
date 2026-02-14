@@ -1,19 +1,13 @@
 import os
 import torch
-from models import PatchXFormer, PatchXFormer_NoFreqAttention, PatchXFormer_NoAdaptiveNorm, PatchXFormer_NoEnhancedEmbedding, \
-    PatchXFormer_NoHybridEncoder, PatchXFormer_BasicPatchModel
+from models import PatchXFormer
 
 
 class Exp_Basic(object):
     def __init__(self, args):
         self.args = args
         self.model_dict = {
-            'PatchXFormer': PatchXFormer,
-            'PatchXFormer_NoFreqAttention': PatchXFormer_NoFreqAttention,
-            'PatchXFormer_NoAdaptiveNorm': PatchXFormer_NoAdaptiveNorm,
-            'PatchXFormer_NoEnhancedEmbedding': PatchXFormer_NoEnhancedEmbedding,
-            'PatchXFormer_NoHybridEncoder': PatchXFormer_NoHybridEncoder,
-            'PatchXFormer_BasicPatchModel': PatchXFormer_BasicPatchModel
+            'PatchXFormer': PatchXFormer
         }
         if args.model == 'Mamba':
             print('Please make sure you have successfully installed mamba_ssm')
