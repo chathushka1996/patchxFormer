@@ -5,7 +5,7 @@ if [ ! -d "$path/logs" ]; then
 fi
 model_name=PatchXFormer
 seq_len=96
-dataset=sl_piliyandala
+dataset=sl_piliyandala_without_weather
 root_path_name=./dataset/$dataset
 data_path_name=solar.csv
 model_id_name=solar_$dataset

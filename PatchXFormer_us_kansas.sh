@@ -40,7 +40,7 @@ do
     n_heads=8
     batch_size=12
     train_epochs=15
-    patience=5
+    patience=4
     learning_rate=0.0001
     dropout=0.1
   elif [ $pred_len -eq 336 ]; then
@@ -50,7 +50,7 @@ do
     n_heads=8
     batch_size=8
     train_epochs=18
-    patience=6
+    patience=4
     learning_rate=0.00008
     dropout=0.12
   elif [ $pred_len -eq 720 ]; then
@@ -60,7 +60,7 @@ do
     n_heads=8
     batch_size=6
     train_epochs=20
-    patience=8
+    patience=4
     learning_rate=0.00005
     dropout=0.15
   fi
