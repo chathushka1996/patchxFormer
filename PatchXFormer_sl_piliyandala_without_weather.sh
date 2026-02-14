@@ -81,9 +81,9 @@ do
   --pred_len $pred_len \
   --e_layers $e_layers \
   --factor 3 \
-  --enc_in 10 \
-  --dec_in 10 \
-  --c_out 10 \
+  --enc_in 3 \
+  --dec_in 3 \
+  --c_out 3 \
   --des 'Exp' \
   --d_model $d_model \
   --d_ff $d_ff \
