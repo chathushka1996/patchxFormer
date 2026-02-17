@@ -2,6 +2,7 @@ import os
 import torch
 from models import PatchXFormer
 from models import PatchXFormer_Variant0_Baseline
+from models import PatchXFormer_Variant1_EnhancedPatch
 
 
 class Exp_Basic(object):
@@ -9,7 +10,8 @@ class Exp_Basic(object):
         self.args = args
         self.model_dict = {
             'PatchXFormer': PatchXFormer,
-            'PatchXFormer_Variant0_Baseline': PatchXFormer_Variant0_Baseline
+            'PatchXFormer_Variant0_Baseline': PatchXFormer_Variant0_Baseline,
+            'PatchXFormer_Variant1_EnhancedPatch': PatchXFormer_Variant1_EnhancedPatch
         }
         if args.model == 'Mamba':
             print('Please make sure you have successfully installed mamba_ssm')
