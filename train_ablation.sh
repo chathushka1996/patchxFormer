@@ -32,44 +32,52 @@ variants=("baseline" "enhanced_patch" "freq_attention" "adaptive_norm" "cross_at
 # Forecasting horizons
 horizons=(96 192 336 720)
 
-# Hyperparameters (adjust based on your needs)
-declare -A d_models
-declare -A d_ffs
-declare -A e_layers
-declare -A batch_sizes
-declare -A learning_rates
-declare -A dropouts
-
-# Hyperparameters for each horizon
-d_models[96]=256
-d_models[192]=384
-d_models[336]=512
-d_models[720]=512
-
-d_ffs[96]=512
-d_ffs[192]=768
-d_ffs[336]=1024
-d_ffs[720]=1024
-
-e_layers[96]=2
-e_layers[192]=2
-e_layers[336]=3
-e_layers[720]=3
-
-batch_sizes[96]=16
-batch_sizes[192]=12
-batch_sizes[336]=8
-batch_sizes[720]=6
-
-learning_rates[96]=0.0001
-learning_rates[192]=0.0001
-learning_rates[336]=0.00008
-learning_rates[720]=0.00005
-
-dropouts[96]=0.1
-dropouts[192]=0.1
-dropouts[336]=0.12
-dropouts[720]=0.15
+# Function to get hyperparameters based on prediction length
+get_hyperparams() {
+  local pred_len=$1
+  case $pred_len in
+    96)
+      d_model=256
+      d_ff=512
+      e_layer=2
+      batch_size=16
+      lr=0.0001
+      dropout=0.1
+      ;;
+    192)
+      d_model=384
+      d_ff=768
+      e_layer=2
+      batch_size=12
+      lr=0.0001
+      dropout=0.1
+      ;;
+    336)
+      d_model=512
+      d_ff=1024
+      e_layer=3
+      batch_size=8
+      lr=0.00008
+      dropout=0.12
+      ;;
+    720)
+      d_model=512
+      d_ff=1024
+      e_layer=3
+      batch_size=6
+      lr=0.00005
+      dropout=0.15
+      ;;
+    *)
+      d_model=256
+      d_ff=512
+      e_layer=2
+      batch_size=16
+      lr=0.0001
+      dropout=0.1
+      ;;
+  esac
+}
 
 # Train each variant for each horizon
 for pred_len in "${horizons[@]}"
@@ -79,12 +87,8 @@ do
   echo "Forecasting Horizon: $pred_len steps"
   echo "=========================================="
   
-  d_model=${d_models[$pred_len]}
-  d_ff=${d_ffs[$pred_len]}
-  e_layer=${e_layers[$pred_len]}
-  batch_size=${batch_sizes[$pred_len]}
-  lr=${learning_rates[$pred_len]}
-  dropout=${dropouts[$pred_len]}
+  # Get hyperparameters for this horizon
+  get_hyperparams $pred_len
   
   echo "Hyperparameters: d_model=$d_model, e_layers=$e_layer, batch_size=$batch_size, lr=$lr"
   echo ""
