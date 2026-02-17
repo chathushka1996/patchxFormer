@@ -5,6 +5,7 @@ from models import PatchXFormer_Variant0_Baseline
 from models import PatchXFormer_Variant1_EnhancedPatch
 from models import PatchXFormer_Variant2_FrequencyAttention
 from models import PatchXFormer_Variant3_AdaptiveNorm
+from models import PatchXFormer_Variant4_CrossAttention
 
 
 class Exp_Basic(object):
@@ -15,7 +16,8 @@ class Exp_Basic(object):
             'PatchXFormer_Variant0_Baseline': PatchXFormer_Variant0_Baseline,
             'PatchXFormer_Variant1_EnhancedPatch': PatchXFormer_Variant1_EnhancedPatch,
             'PatchXFormer_Variant2_FrequencyAttention': PatchXFormer_Variant2_FrequencyAttention,
-            'PatchXFormer_Variant3_AdaptiveNorm': PatchXFormer_Variant3_AdaptiveNorm
+            'PatchXFormer_Variant3_AdaptiveNorm': PatchXFormer_Variant3_AdaptiveNorm,
+            'PatchXFormer_Variant4_CrossAttention': PatchXFormer_Variant4_CrossAttention
         }
         if args.model == 'Mamba':
             print('Please make sure you have successfully installed mamba_ssm')
