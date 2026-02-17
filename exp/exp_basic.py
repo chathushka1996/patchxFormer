@@ -1,13 +1,15 @@
 import os
 import torch
 from models import PatchXFormer
+from models import PatchXFormer_Variant0_Baseline
 
 
 class Exp_Basic(object):
     def __init__(self, args):
         self.args = args
         self.model_dict = {
-            'PatchXFormer': PatchXFormer
+            'PatchXFormer': PatchXFormer,
+            'PatchXFormer_Variant0_Baseline': PatchXFormer_Variant0_Baseline
         }
         if args.model == 'Mamba':
             print('Please make sure you have successfully installed mamba_ssm')
