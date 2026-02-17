@@ -5,3 +5,4 @@ from . import PatchXFormer_Variant1_EnhancedPatch
 from . import PatchXFormer_Variant2_FrequencyAttention
 from . import PatchXFormer_Variant3_AdaptiveNorm
 from . import PatchXFormer_Variant4_CrossAttention
+from . import PatchXFormer_Variant5_FullModel
