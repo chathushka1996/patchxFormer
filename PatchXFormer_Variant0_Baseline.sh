@@ -1,35 +1,4 @@
 export CUDA_VISIBLE_DEVICES=0
-
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
-
-# Try to find run.py in common locations
-RUN_PY=""
-if [ -f "run.py" ]; then
-    RUN_PY="run.py"
-elif [ -f "../run.py" ]; then
-    RUN_PY="../run.py"
-elif [ -f "./run.py" ]; then
-    RUN_PY="./run.py"
-else
-    echo "ERROR: run.py not found!"
-    echo "Current directory: $(pwd)"
-    echo "Script directory: $SCRIPT_DIR"
-    echo ""
-    echo "Please ensure run.py exists. Common locations:"
-    echo "  - Same directory as this script: $SCRIPT_DIR/run.py"
-    echo "  - Parent directory: $(dirname $SCRIPT_DIR)/run.py"
-    echo ""
-    echo "Current directory contents:"
-    ls -la
-    echo ""
-    echo "If run.py is in a different location, please update the script."
-    exit 1
-fi
-
-echo "Using run.py: $RUN_PY"
-
 path=./drive/MyDrive/msc-val
 if [ ! -d "$path/logs" ]; then
     mkdir $path/logs -p
@@ -109,7 +78,7 @@ do
   
   echo "Configuration: d_model=$d_model, e_layers=$e_layers, batch_size=$batch_size"
   
-  python -u $RUN_PY \
+  python -u run.py \
   --task_name long_term_forecast \
   --is_training 1 \
   --root_path $root_path_name \
