@@ -3,7 +3,7 @@ path=./drive/MyDrive/msc-val
 if [ ! -d "$path/logs" ]; then
     mkdir $path/logs -p
 fi
-model_name=PatchXFormer
+model_name=PatchXFormer_Variant4_CrossAttention
 seq_len=96
 dataset=sl_pedro
 root_path_name=./dataset/$dataset
