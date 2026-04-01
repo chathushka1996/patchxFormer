@@ -227,9 +227,10 @@ class ComprehensiveSHAPAnalyzer:
         if train_df is None:
             return None
         
-        # Compute correlation matrix
-        input_features = [f for f in feature_cols if f != self.target_feature]
-        correlation_matrix = train_df[feature_cols].corr()
+        # Compute correlation matrix (excluding temporal features)
+        input_features = [f for f in feature_cols if f != self.target_feature and f not in self.excluded_features]
+        analysis_cols = input_features + [self.target_feature]
+        correlation_matrix = train_df[analysis_cols].corr()
         
         # 1. Save correlation matrix
         correlation_matrix.to_csv(os.path.join(self.output_dir, 'correlation_matrix.csv'))
@@ -439,6 +440,10 @@ class ComprehensiveSHAPAnalyzer:
             if feat_name == self.target_feature:
                 continue
             
+            # Skip excluded features (temporal features)
+            if feat_name in self.excluded_features:
+                continue
+            
             # Get feature values
             feat_values = self.data_aggregated[:, feat_idx]
             feat_mean = feat_values.mean()
@@ -482,11 +487,11 @@ class ComprehensiveSHAPAnalyzer:
         print(f"{'Feature':<20}{'Mean |SHAP|':<15}")
         print("-"*35)
         
-        # Sort by mean absolute SHAP
+        # Sort by mean absolute SHAP (excluding temporal features)
         sorted_idx = np.argsort(mean_abs_shap)[::-1]
         for idx in sorted_idx:
             feat_name = self.all_features[idx] if idx < len(self.all_features) else f"Feature_{idx}"
-            if feat_name != self.target_feature and mean_abs_shap[idx] > 0:
+            if feat_name != self.target_feature and feat_name not in self.excluded_features and mean_abs_shap[idx] > 0:
                 print(f"{feat_name:<20}+{mean_abs_shap[idx]:<14.2f}")
         
         return shap_values, mean_abs_shap
@@ -557,11 +562,11 @@ class ComprehensiveSHAPAnalyzer:
         # Get mean absolute SHAP values
         mean_abs_shap = self.mean_abs_shap if hasattr(self, 'mean_abs_shap') else np.abs(self.shap_values_all).mean(axis=0)
         
-        # Prepare data - exclude target and zero values
+        # Prepare data - exclude target, zero values, and excluded features (timeofday, dayofyear)
         feature_data = []
         for idx in range(len(self.all_features)):
             feat_name = self.all_features[idx]
-            if feat_name != self.target_feature and mean_abs_shap[idx] > 0:
+            if feat_name != self.target_feature and feat_name not in self.excluded_features and mean_abs_shap[idx] > 0:
                 feature_data.append((feat_name, mean_abs_shap[idx], idx))
         
         # Sort by SHAP value (descending)
@@ -727,15 +732,16 @@ class ComprehensiveSHAPAnalyzer:
         if not hasattr(self, 'shap_values_all'):
             self.compute_shap_values_all_features()
         
-        # Create individual plots for each input feature
-        n_input_features = len(self.input_features)
+        # Create individual plots for each input feature (excluding temporal features)
+        plot_features = [f for f in self.input_features if f not in self.excluded_features]
+        n_input_features = len(plot_features)
         n_cols = 3
         n_rows = (n_input_features + n_cols - 1) // n_cols
         
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4*n_rows))
         axes = axes.flatten()
         
-        for i, feat_name in enumerate(self.input_features):
+        for i, feat_name in enumerate(plot_features):
             ax = axes[i]
             
             feat_idx = self.all_features.index(feat_name) if feat_name in self.all_features else i
@@ -890,8 +896,9 @@ class ComprehensiveSHAPAnalyzer:
             # Sort by absolute SHAP value
             sorted_idx = np.argsort(np.abs(sample_shap))[::-1]
             
-            # Filter out target feature
-            display_idx = [i for i in sorted_idx if self.all_features[i] != self.target_feature]
+            # Filter out target feature and excluded temporal features
+            display_idx = [i for i in sorted_idx if self.all_features[i] != self.target_feature 
+                          and self.all_features[i] not in self.excluded_features]
             
             feature_names = [self.all_features[i] for i in display_idx]
             shap_vals = sample_shap[display_idx]
@@ -1338,7 +1345,7 @@ ALIGNMENT WITH PLOS ONE LITERATURE:
                     'Std': data['std_change']
                 }
                 for feat, data in self.feature_importance.items()
-                if feat != self.target_feature
+                if feat != self.target_feature and feat not in self.excluded_features
             ])
             all_features_df = all_features_df.sort_values('Normalized_Importance', ascending=False)
             all_features_df.to_csv(os.path.join(self.output_dir, 'feature_importance_all.csv'), index=False)
