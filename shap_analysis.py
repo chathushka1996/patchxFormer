@@ -477,8 +477,10 @@ IMPORTANT:
         explain_targets = all_targets[background_samples:background_samples + num_samples]
         
         # Extract target values for error-based importance
-        # Target is the last column of the prediction horizon
-        target_values = explain_targets[:, :, -1]  # [samples, pred_len]
+        # Target contains [label_len + pred_len] timesteps, we need only pred_len
+        # Target is the last column (Solar Power Output)
+        pred_len = self.args.pred_len
+        target_values = explain_targets[:, -pred_len:, -1]  # [samples, pred_len]
         
         # Aggregate for display purposes
         aggregated_explain = explain_data.mean(axis=1)
