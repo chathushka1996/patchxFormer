@@ -15,6 +15,7 @@ Features:
 3. Local SHAP interpretation - Individual prediction explanations
 4. Feature interaction analysis
 5. Temporal contribution analysis
+6. Normalization-aware analysis - Considers StandardScaler transformation
 """
 
 import argparse
@@ -89,6 +90,312 @@ class SHAPExplainer:
         self.output_dir = './shap_results/'
         os.makedirs(self.output_dir, exist_ok=True)
         
+        # Scaler info (will be populated by analyze_data_scaling)
+        self.scaler = None
+        self.scaler_info = None
+        self.raw_data_stats = None
+        self.normalized_data_stats = None
+        
+    def analyze_data_scaling(self, root_path, data_path='train.csv'):
+        """
+        Analyze the raw and normalized data to understand scaling effects.
+        This helps interpret SHAP values in the context of feature normalization.
+        
+        Args:
+            root_path: Path to dataset directory
+            data_path: Name of training data file
+            
+        Returns:
+            dict: Scaling analysis results
+        """
+        print("\n" + "="*70)
+        print("DATA SCALING ANALYSIS (Understanding Normalization Effects)")
+        print("="*70)
+        
+        # Try to load raw training data
+        try:
+            train_file = os.path.join(root_path, data_path)
+            if not os.path.exists(train_file):
+                train_file = os.path.join(root_path, 'train.csv')
+            
+            if os.path.exists(train_file):
+                raw_df = pd.read_csv(train_file)
+                print(f"\nLoaded raw data from: {train_file}")
+                print(f"Shape: {raw_df.shape}")
+            else:
+                print(f"Warning: Could not find training data at {train_file}")
+                return None
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            return None
+        
+        # Get feature columns (excluding date)
+        feature_cols = [col for col in raw_df.columns if col not in ['date', 'Date', 'datetime']]
+        
+        # Ensure we use the correct feature order
+        ordered_cols = []
+        for feat in self.feature_names:
+            if feat in feature_cols:
+                ordered_cols.append(feat)
+        
+        if len(ordered_cols) < len(self.feature_names):
+            # Use available columns
+            ordered_cols = [col for col in feature_cols if col in self.feature_names or col == self.target_feature]
+        
+        print(f"Features being analyzed: {ordered_cols}")
+        
+        # ================================================================
+        # PART 1: RAW DATA STATISTICS
+        # ================================================================
+        print("\n" + "-"*70)
+        print("1. RAW DATA STATISTICS (Before Normalization)")
+        print("-"*70)
+        
+        raw_stats = {}
+        print(f"\n{'Feature':<20}{'Mean':<12}{'Std':<12}{'Min':<12}{'Max':<12}{'Range':<12}")
+        print("-"*70)
+        
+        for col in ordered_cols:
+            if col in raw_df.columns:
+                stats = {
+                    'mean': raw_df[col].mean(),
+                    'std': raw_df[col].std(),
+                    'min': raw_df[col].min(),
+                    'max': raw_df[col].max(),
+                    'range': raw_df[col].max() - raw_df[col].min()
+                }
+                raw_stats[col] = stats
+                print(f"{col:<20}{stats['mean']:<12.4f}{stats['std']:<12.4f}"
+                      f"{stats['min']:<12.4f}{stats['max']:<12.4f}{stats['range']:<12.4f}")
+        
+        self.raw_data_stats = raw_stats
+        
+        # ================================================================
+        # PART 2: APPLY STANDARDSCALER (Same as data_loader.py)
+        # ================================================================
+        print("\n" + "-"*70)
+        print("2. NORMALIZED DATA STATISTICS (After StandardScaler)")
+        print("-"*70)
+        
+        # Apply StandardScaler
+        self.scaler = StandardScaler()
+        data_for_scaling = raw_df[ordered_cols].values
+        normalized_data = self.scaler.fit_transform(data_for_scaling)
+        normalized_df = pd.DataFrame(normalized_data, columns=ordered_cols)
+        
+        # Store scaler info
+        self.scaler_info = {
+            'means': dict(zip(ordered_cols, self.scaler.mean_)),
+            'stds': dict(zip(ordered_cols, self.scaler.scale_)),
+            'feature_order': ordered_cols
+        }
+        
+        print(f"\n{'Feature':<20}{'Scaler μ':<12}{'Scaler σ':<12}{'Norm Min':<12}{'Norm Max':<12}{'Norm Range':<12}")
+        print("-"*70)
+        
+        norm_stats = {}
+        for i, col in enumerate(ordered_cols):
+            stats = {
+                'scaler_mean': self.scaler.mean_[i],
+                'scaler_std': self.scaler.scale_[i],
+                'norm_min': normalized_df[col].min(),
+                'norm_max': normalized_df[col].max(),
+                'norm_range': normalized_df[col].max() - normalized_df[col].min(),
+                'norm_std': normalized_df[col].std()
+            }
+            norm_stats[col] = stats
+            print(f"{col:<20}{stats['scaler_mean']:<12.4f}{stats['scaler_std']:<12.4f}"
+                  f"{stats['norm_min']:<12.4f}{stats['norm_max']:<12.4f}{stats['norm_range']:<12.4f}")
+        
+        self.normalized_data_stats = norm_stats
+        
+        # ================================================================
+        # PART 3: CORRELATION ANALYSIS
+        # ================================================================
+        print("\n" + "-"*70)
+        print("3. FEATURE CORRELATIONS WITH TARGET")
+        print("-"*70)
+        
+        target_col = self.target_feature
+        if target_col in raw_df.columns:
+            correlations = {}
+            print(f"\n{'Feature':<20}{'Correlation':<15}{'|Correlation|':<15}{'Direction':<15}")
+            print("-"*70)
+            
+            for col in ordered_cols:
+                if col != target_col and col in raw_df.columns:
+                    corr = raw_df[col].corr(raw_df[target_col])
+                    correlations[col] = corr
+                    direction = "Positive" if corr > 0 else "Negative"
+                    print(f"{col:<20}{corr:>+.4f}{'':>8}{abs(corr):<15.4f}{direction:<15}")
+            
+            # Sort by absolute correlation
+            sorted_corr = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+            
+            print("\n" + "-"*70)
+            print("4. EXPECTED IMPORTANCE RANKING (Based on |Correlation|)")
+            print("-"*70)
+            
+            total_abs_corr = sum(abs(c) for _, c in sorted_corr)
+            print(f"\n{'Rank':<6}{'Feature':<20}{'|Corr|':<12}{'Expected %':<15}")
+            print("-"*70)
+            
+            for rank, (feat, corr) in enumerate(sorted_corr, 1):
+                pct = (abs(corr) / total_abs_corr) * 100 if total_abs_corr > 0 else 0
+                print(f"{rank:<6}{feat:<20}{abs(corr):<12.4f}{pct:<15.1f}%")
+        
+        # ================================================================
+        # PART 4: TEMPORAL VARIABILITY
+        # ================================================================
+        print("\n" + "-"*70)
+        print("5. TEMPORAL VARIABILITY (Feature Changes Over Time)")
+        print("-"*70)
+        
+        temporal_var = {}
+        print(f"\n{'Feature':<20}{'Mean |Δ|':<12}{'Std Δ':<12}{'Variability':<15}")
+        print("-"*70)
+        
+        for col in ordered_cols:
+            if col in raw_df.columns:
+                diff = raw_df[col].diff().abs()
+                mean_diff = diff.mean()
+                std_diff = diff.std()
+                variability = std_diff / raw_df[col].std() if raw_df[col].std() > 0 else 0
+                temporal_var[col] = variability
+                print(f"{col:<20}{mean_diff:<12.4f}{std_diff:<12.4f}{variability:<15.4f}")
+        
+        # ================================================================
+        # PART 5: CREATE VISUALIZATION
+        # ================================================================
+        print("\n" + "-"*70)
+        print("6. CREATING DATA ANALYSIS VISUALIZATIONS")
+        print("-"*70)
+        
+        self._create_scaling_visualization(raw_df, normalized_df, ordered_cols, correlations if target_col in raw_df.columns else {})
+        
+        # ================================================================
+        # SUMMARY
+        # ================================================================
+        print("\n" + "="*70)
+        print("DATA SCALING ANALYSIS SUMMARY")
+        print("="*70)
+        
+        print("""
+KEY INSIGHTS:
+1. StandardScaler transforms all features to have mean=0 and std=1
+2. After normalization, features with larger ORIGINAL variance may still
+   have more influence if the model learns those patterns
+3. Correlation with target shows expected LINEAR importance
+4. Model (Transformer) can capture NON-LINEAR and TEMPORAL patterns
+
+IMPORTANT:
+- SHAP importance may differ from correlation-based importance
+- High temporal variability can make features more predictive
+- Model learns from NORMALIZED data, but captures original patterns
+        """)
+        
+        return {
+            'raw_stats': raw_stats,
+            'norm_stats': norm_stats,
+            'scaler_info': self.scaler_info,
+            'correlations': correlations if target_col in raw_df.columns else {},
+            'temporal_variability': temporal_var
+        }
+    
+    def _create_scaling_visualization(self, raw_df, normalized_df, feature_cols, correlations):
+        """Create visualization comparing raw and normalized data."""
+        
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        
+        # 1. Raw data ranges
+        ax1 = axes[0, 0]
+        raw_ranges = [self.raw_data_stats.get(f, {}).get('range', 0) for f in feature_cols if f in self.raw_data_stats]
+        feat_labels = [f for f in feature_cols if f in self.raw_data_stats]
+        colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(feat_labels)))
+        ax1.barh(range(len(feat_labels)), raw_ranges, color=colors)
+        ax1.set_yticks(range(len(feat_labels)))
+        ax1.set_yticklabels(feat_labels)
+        ax1.set_xlabel('Value Range')
+        ax1.set_title('RAW Data Ranges (Before Normalization)')
+        ax1.set_xscale('log')
+        
+        # 2. Normalized data ranges
+        ax2 = axes[0, 1]
+        norm_ranges = [self.normalized_data_stats.get(f, {}).get('norm_range', 0) for f in feat_labels]
+        ax2.barh(range(len(feat_labels)), norm_ranges, color=colors)
+        ax2.set_yticks(range(len(feat_labels)))
+        ax2.set_yticklabels(feat_labels)
+        ax2.set_xlabel('Normalized Range (std units)')
+        ax2.set_title('NORMALIZED Data Ranges (After StandardScaler)')
+        
+        # 3. Correlation with target
+        ax3 = axes[0, 2]
+        if correlations:
+            corr_features = [f for f in feat_labels if f in correlations]
+            corr_values = [correlations.get(f, 0) for f in corr_features]
+            bar_colors = ['green' if c > 0 else 'red' for c in corr_values]
+            ax3.barh(range(len(corr_features)), corr_values, color=bar_colors)
+            ax3.set_yticks(range(len(corr_features)))
+            ax3.set_yticklabels(corr_features)
+            ax3.set_xlabel('Correlation')
+            ax3.set_title('Correlation with Solar Power Output')
+            ax3.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+        
+        # 4. Scaler means
+        ax4 = axes[1, 0]
+        scaler_means = [self.scaler_info['means'].get(f, 0) for f in feat_labels]
+        ax4.barh(range(len(feat_labels)), scaler_means, color='steelblue')
+        ax4.set_yticks(range(len(feat_labels)))
+        ax4.set_yticklabels(feat_labels)
+        ax4.set_xlabel('Scaler Mean (μ)')
+        ax4.set_title('StandardScaler Means')
+        
+        # 5. Scaler stds
+        ax5 = axes[1, 1]
+        scaler_stds = [self.scaler_info['stds'].get(f, 0) for f in feat_labels]
+        ax5.barh(range(len(feat_labels)), scaler_stds, color='coral')
+        ax5.set_yticks(range(len(feat_labels)))
+        ax5.set_yticklabels(feat_labels)
+        ax5.set_xlabel('Scaler Std (σ)')
+        ax5.set_title('StandardScaler Standard Deviations')
+        ax5.set_xscale('log')
+        
+        # 6. Distribution comparison for key features
+        ax6 = axes[1, 2]
+        key_features = ['pressure', 'temp', 'humidity', 'cloudcover']
+        available_keys = [f for f in key_features if f in normalized_df.columns]
+        if available_keys:
+            for feat in available_keys[:4]:
+                ax6.hist(normalized_df[feat].values, bins=50, alpha=0.5, label=feat, density=True)
+            ax6.set_xlabel('Normalized Value')
+            ax6.set_ylabel('Density')
+            ax6.set_title('Normalized Feature Distributions')
+            ax6.legend()
+        
+        plt.suptitle('Data Scaling Analysis - Raw vs Normalized Features\nPatchXFormer Solar Forecasting', 
+                     fontsize=14, y=1.02)
+        plt.tight_layout()
+        
+        save_path = os.path.join(self.output_dir, 'data_scaling_analysis.png')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path.replace('.png', '.pdf'), format='pdf', bbox_inches='tight')
+        print(f"Saved scaling analysis plot to: {save_path}")
+        plt.close()
+        
+        # Save scaling info to CSV
+        scaling_df = pd.DataFrame({
+            'Feature': feat_labels,
+            'Raw_Mean': [self.raw_data_stats.get(f, {}).get('mean', 0) for f in feat_labels],
+            'Raw_Std': [self.raw_data_stats.get(f, {}).get('std', 0) for f in feat_labels],
+            'Raw_Range': [self.raw_data_stats.get(f, {}).get('range', 0) for f in feat_labels],
+            'Scaler_Mean': [self.scaler_info['means'].get(f, 0) for f in feat_labels],
+            'Scaler_Std': [self.scaler_info['stds'].get(f, 0) for f in feat_labels],
+            'Norm_Range': [self.normalized_data_stats.get(f, {}).get('norm_range', 0) for f in feat_labels],
+            'Correlation': [correlations.get(f, 0) for f in feat_labels]
+        })
+        scaling_df.to_csv(os.path.join(self.output_dir, 'data_scaling_info.csv'), index=False)
+        print(f"Saved scaling info to: {os.path.join(self.output_dir, 'data_scaling_info.csv')}")
+    
     def create_model_wrapper(self):
         """
         Create a wrapper function for SHAP that handles the model's forward pass.
@@ -898,52 +1205,62 @@ class SHAPExplainer:
         print(f"Saved temporal contribution analysis to {save_path}")
         plt.close()
         
-    def generate_full_report(self, data_loader, num_samples=100, background_samples=50):
+    def generate_full_report(self, data_loader, num_samples=100, background_samples=50, 
+                              root_path=None, data_path='train.csv'):
         """
-        Generate comprehensive SHAP analysis report.
+        Generate comprehensive SHAP analysis report with normalization-aware analysis.
         
-        This creates all visualizations and statistics for model explainability.
+        This creates all visualizations and statistics for model explainability,
+        including analysis of how data scaling affects feature importance.
         
         Args:
             data_loader: Data loader for analysis
             num_samples: Number of samples to analyze
             background_samples: Number of background samples
+            root_path: Path to dataset for scaling analysis
+            data_path: Training data filename
         """
         print("="*60)
         print("SHAP EXPLAINABILITY ANALYSIS - PatchXFormer")
         print("="*60)
         
+        # 0. Analyze data scaling first (to understand normalization effects)
+        scaling_analysis = None
+        if root_path:
+            print("\n[0/7] Analyzing data scaling and normalization...")
+            scaling_analysis = self.analyze_data_scaling(root_path, data_path)
+        
         # 1. Compute feature-level SHAP values
-        print("\n[1/6] Computing feature-level SHAP values...")
+        print("\n[1/7] Computing feature-level SHAP values...")
         shap_values, data, feature_importance = self.compute_feature_level_shap(
             data_loader, num_samples, background_samples
         )
         
         # 2. Plot global summary
-        print("\n[2/6] Creating global SHAP summary plot...")
+        print("\n[2/7] Creating global SHAP summary plot...")
         self.plot_global_shap_summary(shap_values, data)
         
         # 3. Plot feature importance bar chart
-        print("\n[3/6] Creating feature importance bar chart...")
+        print("\n[3/7] Creating feature importance bar chart...")
         self.plot_feature_importance_bar(feature_importance)
         
         # 4. Create partial dependence plots
-        print("\n[4/6] Creating partial dependence plots...")
+        print("\n[4/7] Creating partial dependence plots...")
         self.plot_all_partial_dependence(shap_values, data)
         
         # 5. Create weather contribution analysis
-        print("\n[5/6] Analyzing weather parameter contributions...")
+        print("\n[5/7] Analyzing weather parameter contributions...")
         weather_stats = self.create_weather_contribution_analysis(shap_values, data)
         
         # 6. Create local explanations for a few samples
-        print("\n[6/6] Creating local SHAP explanations...")
+        print("\n[6/7] Creating local SHAP explanations...")
         for idx in [0, 1, 2]:  # Explain first 3 samples
             if idx < len(data):
                 self.plot_local_explanation(shap_values, data, idx)
         
-        # 7. Generate comprehensive text report
+        # 7. Generate comprehensive text report (including scaling analysis)
         print("\n[7/7] Generating comprehensive analysis report...")
-        self._generate_comprehensive_report(shap_values, data, feature_importance, weather_stats)
+        self._generate_comprehensive_report(shap_values, data, feature_importance, weather_stats, scaling_analysis)
         
         print("\n" + "="*60)
         print(f"SHAP analysis complete! Results saved to: {self.output_dir}")
@@ -954,13 +1271,15 @@ class SHAPExplainer:
             'shap_values': shap_values,
             'data': data,
             'feature_importance': feature_importance,
+            'scaling_analysis': scaling_analysis,
             'output_dir': self.output_dir
         }
     
-    def _generate_comprehensive_report(self, shap_values, data, feature_importance, weather_stats=None):
+    def _generate_comprehensive_report(self, shap_values, data, feature_importance, weather_stats=None, scaling_analysis=None):
         """
         Generate a comprehensive text report with all SHAP analysis results.
         This report can be referred to later for evaluation.
+        Includes normalization-aware analysis.
         """
         import datetime
         
@@ -1074,9 +1393,64 @@ class SHAPExplainer:
         
         report_lines.append("")
         
+        # Data Scaling Analysis (NEW SECTION)
+        report_lines.append("-" * 80)
+        report_lines.append("6. DATA SCALING ANALYSIS (Normalization Effects)")
+        report_lines.append("-" * 80)
+        
+        if scaling_analysis and self.scaler_info:
+            report_lines.append("\nStandardScaler Parameters (used for normalization):")
+            report_lines.append(f"{'Feature':<20}{'Raw Mean':<15}{'Raw Std':<15}{'Scaler μ':<15}{'Scaler σ':<15}")
+            report_lines.append("-" * 80)
+            
+            for feat in self.scaler_info.get('feature_order', []):
+                raw_mean = self.raw_data_stats.get(feat, {}).get('mean', 0)
+                raw_std = self.raw_data_stats.get(feat, {}).get('std', 0)
+                scaler_mean = self.scaler_info['means'].get(feat, 0)
+                scaler_std = self.scaler_info['stds'].get(feat, 0)
+                report_lines.append(f"{feat:<20}{raw_mean:<15.4f}{raw_std:<15.4f}{scaler_mean:<15.4f}{scaler_std:<15.4f}")
+            
+            report_lines.append("\n\nCorrelation vs SHAP Importance Comparison:")
+            report_lines.append(f"{'Feature':<20}{'|Correlation|':<18}{'SHAP Importance':<18}{'Match?':<12}")
+            report_lines.append("-" * 80)
+            
+            # Compare correlation-based expected importance with SHAP importance
+            correlations_dict = scaling_analysis.get('correlations', {})
+            if correlations_dict:
+                sorted_corr = sorted(correlations_dict.items(), key=lambda x: abs(x[1]), reverse=True)
+                shap_sorted = sorted([(f, imp) for f, imp in sorted_features if f != self.target_feature], 
+                                    key=lambda x: x[1], reverse=True)
+                
+                corr_rank = {feat: rank for rank, (feat, _) in enumerate(sorted_corr, 1)}
+                shap_rank = {feat: rank for rank, (feat, _) in enumerate(shap_sorted, 1)}
+                
+                for feat, corr in sorted_corr[:10]:
+                    shap_imp = dict(sorted_features).get(feat, 0)
+                    c_rank = corr_rank.get(feat, 'N/A')
+                    s_rank = shap_rank.get(feat, 'N/A')
+                    match = "Yes" if c_rank == s_rank else f"Corr:{c_rank} vs SHAP:{s_rank}"
+                    report_lines.append(f"{feat:<20}{abs(corr):<18.4f}{shap_imp:<18.6f}{match:<12}")
+        else:
+            report_lines.append("\nScaling analysis not available (root_path not provided)")
+        
+        report_lines.append("""
+KEY OBSERVATIONS ON SCALING:
+- StandardScaler transforms: x_normalized = (x - mean) / std
+- After normalization, all features have approximately mean=0 and std=1
+- This means raw value ranges do NOT directly determine model importance
+- The model learns patterns in the NORMALIZED space
+- However, features with consistent temporal patterns may still dominate
+
+WHY SHAP IMPORTANCE MAY DIFFER FROM CORRELATION:
+1. Correlation measures LINEAR relationship; model captures NON-LINEAR patterns
+2. Model uses 96 time steps; temporal dynamics matter more than point values
+3. Features that predict FUTURE changes are more valuable than current correlations
+4. Multicollinearity: features may share information, SHAP attributes to the dominant one
+        """)
+        
         # Interpretation Guide
         report_lines.append("-" * 80)
-        report_lines.append("6. INTERPRETATION GUIDE")
+        report_lines.append("7. INTERPRETATION GUIDE")
         report_lines.append("-" * 80)
         report_lines.append("""
 SHAP Value Interpretation:
@@ -1095,7 +1469,7 @@ Weather Parameter Effects on Solar Power:
         
         # Files Generated
         report_lines.append("-" * 80)
-        report_lines.append("7. FILES GENERATED")
+        report_lines.append("8. FILES GENERATED")
         report_lines.append("-" * 80)
         report_lines.append(f"  - feature_importance.csv: Feature importance rankings")
         report_lines.append(f"  - feature_importance_bar.png/pdf: Bar chart visualization")
@@ -1105,6 +1479,8 @@ Weather Parameter Effects on Solar Power:
         report_lines.append(f"  - partial_dependence/: Partial dependence plots")
         report_lines.append(f"  - local_explanation_sample_*.png: Local explanations")
         report_lines.append(f"  - shap_values_aggregated.npy: Raw SHAP values")
+        report_lines.append(f"  - data_scaling_analysis.png/pdf: Scaling visualization")
+        report_lines.append(f"  - data_scaling_info.csv: Scaler parameters and stats")
         report_lines.append(f"  - SHAP_ANALYSIS_REPORT.txt: This report")
         report_lines.append("")
         report_lines.append("=" * 80)
@@ -1301,11 +1677,13 @@ def main():
     explainer.output_dir = args.output_dir
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Run full SHAP analysis
+    # Run full SHAP analysis with scaling analysis
     results = explainer.generate_full_report(
         test_loader,
         num_samples=args.num_samples,
-        background_samples=args.background_samples
+        background_samples=args.background_samples,
+        root_path=args.root_path,  # Pass root_path for scaling analysis
+        data_path='train.csv'
     )
     
     print("\nAnalysis complete!")
