@@ -803,11 +803,13 @@ def main():
     parser.add_argument('--target', type=str, default='Solar Power Output')
     parser.add_argument('--freq', type=str, default='h')
     parser.add_argument('--checkpoints', type=str, default='./checkpoints/')
+    parser.add_argument('--inverse', action='store_true', default=False)
     
     # Forecasting config
     parser.add_argument('--seq_len', type=int, default=96)
     parser.add_argument('--label_len', type=int, default=48)
     parser.add_argument('--pred_len', type=int, default=96)
+    parser.add_argument('--seasonal_patterns', type=str, default='Monthly')
     
     # Model config
     parser.add_argument('--enc_in', type=int, default=10)
@@ -822,6 +824,17 @@ def main():
     parser.add_argument('--embed', type=str, default='timeF')
     parser.add_argument('--activation', type=str, default='gelu')
     parser.add_argument('--factor', type=int, default=3)
+    parser.add_argument('--moving_avg', type=int, default=25)
+    parser.add_argument('--use_norm', type=int, default=1)
+    parser.add_argument('--channel_independence', type=int, default=1)
+    parser.add_argument('--decomp_method', type=str, default='moving_avg')
+    parser.add_argument('--down_sampling_layers', type=int, default=0)
+    parser.add_argument('--down_sampling_window', type=int, default=1)
+    parser.add_argument('--down_sampling_method', type=str, default=None)
+    parser.add_argument('--seg_len', type=int, default=96)
+    parser.add_argument('--top_k', type=int, default=5)
+    parser.add_argument('--num_kernels', type=int, default=6)
+    parser.add_argument('--patch_len', type=int, default=16)
     
     # Additional model params
     parser.add_argument('--expand', type=int, default=2)
@@ -832,7 +845,9 @@ def main():
     # GPU config
     parser.add_argument('--use_gpu', type=bool, default=True)
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--gpu_type', type=str, default='cuda', help='gpu type: cuda or mps')
     parser.add_argument('--use_multi_gpu', action='store_true', default=False)
+    parser.add_argument('--devices', type=str, default='0', help='device ids for multi-gpu')
     
     # Data loader config
     parser.add_argument('--num_workers', type=int, default=0)
