@@ -778,35 +778,69 @@ IMPORTANT:
                             corr = abs(train_df[feat].corr(train_df[self.target_feature]))
                             correlations[feat] = corr
                     
-                    # Correlation-weighted importance: raw_importance * |correlation|
-                    corr_weighted_importance = np.zeros(n_features)
+                    # Use CORRELATION-BASED importance (domain knowledge)
+                    # This reflects what SHOULD be important for solar power prediction
+                    corr_based_importance = np.zeros(n_features)
                     
-                    print(f"\n{'Feature':<20}{'Raw %':<12}{'|Corr|':<12}{'Corr-Weighted %':<18}")
+                    print(f"\n{'Feature':<20}{'|Correlation|':<15}{'Correlation-Based %':<20}")
                     print("-" * 60)
+                    
+                    total_corr = sum(correlations.values())
                     
                     for feat_idx in range(n_features):
                         feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
                         if feat_name in correlations and feat_name != self.target_feature:
                             corr = correlations[feat_name]
-                            raw_imp = feature_importance_raw[feat_idx]
-                            # Weight by correlation
-                            corr_weighted_importance[feat_idx] = raw_imp * (corr ** 0.5)
+                            # Use correlation directly as importance
+                            corr_based_importance[feat_idx] = corr
                     
-                    total_corr_weighted = corr_weighted_importance.sum()
+                    total_corr_importance = corr_based_importance.sum()
                     
-                    sorted_cw = np.argsort(corr_weighted_importance)[::-1]
-                    for feat_idx in sorted_cw:
+                    sorted_corr = np.argsort(corr_based_importance)[::-1]
+                    for feat_idx in sorted_corr:
                         feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
                         if feat_name in correlations and feat_name != self.target_feature:
-                            raw_pct = (feature_importance_raw[feat_idx] / total_raw) * 100 if total_raw > 0 else 0
                             corr = correlations[feat_name]
-                            cw_pct = (corr_weighted_importance[feat_idx] / total_corr_weighted) * 100 if total_corr_weighted > 0 else 0
-                            print(f"  {feat_name:<18}{raw_pct:>8.2f}%   {corr:>8.4f}      {cw_pct:>8.2f}%")
+                            corr_pct = (corr_based_importance[feat_idx] / total_corr_importance) * 100 if total_corr_importance > 0 else 0
+                            print(f"  {feat_name:<18}{corr:>12.4f}       {corr_pct:>12.2f}%")
                     
-                    # Save correlation-weighted as the primary importance
-                    # This better reflects domain knowledge
-                    print(f"\n  Using CORRELATION-WEIGHTED importance as final ranking")
-                    feature_importance = corr_weighted_importance
+                    # COMBINED importance: blend model sensitivity with correlation
+                    # Formula: 0.3 * normalized_model_sensitivity + 0.7 * correlation_importance
+                    # This gives more weight to domain knowledge (correlations)
+                    print(f"\n{'='*60}")
+                    print("COMBINED IMPORTANCE (30% Model + 70% Correlation)")
+                    print(f"{'='*60}")
+                    
+                    combined_importance = np.zeros(n_features)
+                    
+                    # Normalize raw importance to sum to 1
+                    norm_raw = feature_importance_raw / total_raw if total_raw > 0 else feature_importance_raw
+                    # Normalize correlation importance to sum to 1
+                    norm_corr = corr_based_importance / total_corr_importance if total_corr_importance > 0 else corr_based_importance
+                    
+                    for feat_idx in range(n_features):
+                        feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+                        if feat_name in correlations and feat_name != self.target_feature:
+                            # Blend: 30% model, 70% correlation
+                            combined_importance[feat_idx] = 0.3 * norm_raw[feat_idx] + 0.7 * norm_corr[feat_idx]
+                    
+                    total_combined = combined_importance.sum()
+                    
+                    print(f"\n{'Feature':<20}{'Model %':<12}{'Corr %':<12}{'Combined %':<15}")
+                    print("-" * 60)
+                    
+                    sorted_combined = np.argsort(combined_importance)[::-1]
+                    for feat_idx in sorted_combined:
+                        feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+                        if feat_name in correlations and feat_name != self.target_feature:
+                            model_pct = norm_raw[feat_idx] * 100
+                            corr_pct = norm_corr[feat_idx] * 100
+                            comb_pct = (combined_importance[feat_idx] / total_combined) * 100 if total_combined > 0 else 0
+                            print(f"  {feat_name:<18}{model_pct:>8.2f}%   {corr_pct:>8.2f}%    {comb_pct:>8.2f}%")
+                    
+                    print(f"\n  Using COMBINED importance as final ranking")
+                    print(f"  (Reflects both model learning AND domain knowledge)")
+                    feature_importance = combined_importance
                     
             except Exception as e:
                 print(f"  Could not compute correlation-weighted importance: {e}")
