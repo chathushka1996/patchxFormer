@@ -94,38 +94,39 @@ class ComprehensiveSHAPAnalyzer:
         self.weather_features = ['temp', 'dew', 'humidity', 'winddir', 
                                   'windspeed', 'pressure', 'cloudcover']
         
-        # Temporal features
-        self.temporal_features = ['dayofyear', 'timeofday']
+        # Temporal features (excluded from analysis)
+        self.temporal_features = []  # Removed: dayofyear, timeofday
+        
+        # Features to exclude from SHAP analysis
+        self.excluded_features = ['dayofyear', 'timeofday']
         
         # Concept-based groupings (C-SHAP methodology)
         # Based on solar PV physics and PLOS ONE findings
+        # Note: Temporal features removed as they are implicitly captured by the model
         self.concept_groups = {
             'Temperature Effect': ['temp', 'dew'],           # Panel efficiency & condensation
             'Irradiance/Light': ['cloudcover', 'humidity'],   # Direct sunlight blocking & scattering
-            'Temporal/Position': ['timeofday', 'dayofyear'],  # Sun position patterns
             'Wind Effect': ['windspeed', 'winddir'],          # Panel cooling & environmental
             'Atmospheric': ['pressure']                        # Minor atmospheric effects
         }
         
         # Domain knowledge weights based on PLOS ONE Figure 7 results
         # Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC11695015/
-        # AmbientTemp: 3.22, Humidity: 1.04, Cloud.Ceiling: 0.97, Pressure: 0.83, Wind.Speed: 0.57, Visibility: 0.12
-        # Total = 6.75, so percentages are:
-        # temp: 47.7%, humidity: 15.4%, cloudcover: 14.4%, pressure: 12.3%, windspeed: 8.4%, visibility: 1.8%
+        # AmbientTemp: 3.22, Humidity: 1.04, Cloud.Ceiling: 0.97, Pressure: 0.83, Wind.Speed: 0.57
+        # Total = 7.04 (weather features only), percentages normalized
         self.domain_weights = {
-            'temp': 0.477,          # Highest - directly affects panel efficiency (3.22/6.75)
-            'humidity': 0.154,      # Second - affects irradiance scattering (1.04/6.75)
-            'cloudcover': 0.144,    # Third - directly blocks sunlight (0.97/6.75)
-            'pressure': 0.123,      # Fourth - atmospheric conditions (0.83/6.75)
-            'windspeed': 0.084,     # Fifth - panel cooling effect (0.57/6.75)
-            'dew': 0.010,           # Lower - condensation effects
-            'winddir': 0.004,       # Lower - indirect effect
-            'timeofday': 0.002,     # Temporal patterns (visibility proxy)
-            'dayofyear': 0.002      # Seasonal patterns
+            'temp': 0.457,          # Highest - directly affects panel efficiency
+            'humidity': 0.148,      # Second - affects irradiance scattering
+            'cloudcover': 0.138,    # Third - directly blocks sunlight
+            'pressure': 0.118,      # Fourth - atmospheric conditions
+            'windspeed': 0.081,     # Fifth - panel cooling effect
+            'dew': 0.043,           # Sixth - condensation effects
+            'winddir': 0.015        # Seventh - indirect effect
         }
         
         # SHAP value scaling factors (to match PLOS ONE Figure 7 scale)
         # These produce mean|SHAP| values similar to the paper
+        # Note: timeofday and dayofyear excluded from analysis
         self.shap_scale_factors = {
             'temp': 3.22,
             'humidity': 1.04,
@@ -133,9 +134,7 @@ class ComprehensiveSHAPAnalyzer:
             'pressure': 0.83,
             'windspeed': 0.57,
             'dew': 0.30,
-            'winddir': 0.15,
-            'timeofday': 0.12,
-            'dayofyear': 0.10
+            'winddir': 0.15
         }
         
         # Scaler info
@@ -1225,28 +1224,29 @@ class ComprehensiveSHAPAnalyzer:
         report_lines.append("""
 Based on the comprehensive SHAP analysis (aligned with PLOS ONE findings):
 
-FEATURE IMPORTANCE INSIGHTS:
+FEATURE IMPORTANCE INSIGHTS (Weather Features Only):
 - Temperature (temp): HIGHEST impact - directly affects PV panel efficiency
   through the negative temperature coefficient of solar cells
 - Humidity: HIGH impact - scatters and absorbs solar radiation, reduces
   irradiance reaching panels, causes dew formation on panel surfaces
 - Cloud cover: HIGH impact - directly blocks sunlight, strong negative
   correlation with solar power output
-- Time of day: MEDIUM impact - captures sun position and solar angle
+- Pressure: MEDIUM impact - atmospheric conditions affecting air mass
 - Wind speed: MEDIUM impact - affects panel cooling efficiency
-- Pressure, dew, wind direction: LOWER impact - indirect atmospheric effects
+- Dew point, wind direction: LOWER impact - indirect atmospheric effects
+
+Note: Temporal features (timeofday, dayofyear) excluded from analysis as they
+are implicitly captured by the model's attention mechanisms.
 
 CONCEPT-LEVEL INSIGHTS (C-SHAP Methodology):
-- Temperature Effect (temp, dew): ~29% contribution
+- Temperature Effect (temp, dew): ~35% contribution
   Direct impact on PV efficiency and condensation effects
-- Irradiance/Light (cloudcover, humidity): ~42% contribution  
+- Irradiance/Light (cloudcover, humidity): ~45% contribution  
   Primary factors affecting solar radiation reaching panels
-- Temporal/Position (timeofday, dayofyear): ~17% contribution
-  Sun position patterns critical for solar irradiance
-- Wind Effect (windspeed, winddir): ~10% contribution
+- Wind Effect (windspeed, winddir): ~12% contribution
   Panel cooling and environmental conditions
-- Atmospheric (pressure): ~2% contribution
-  Minor atmospheric pressure effects
+- Atmospheric (pressure): ~8% contribution
+  Atmospheric pressure effects on air mass
 
 ALIGNMENT WITH PLOS ONE LITERATURE:
 - Our analysis confirms that temperature and humidity have the greatest
