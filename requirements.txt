@@ -17,6 +17,7 @@ patool
 # SHAP Explainability Analysis
 shap>=0.42.0
 lime>=0.2.0
+statsmodels>=0.14.0
 
 # Visualization
 seaborn>=0.12.0
