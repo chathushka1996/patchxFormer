@@ -233,12 +233,17 @@ class SHAPExplainer:
         
         return shap_values, aggregated_explain, feature_importance
     
-    def _compute_permutation_importance(self, data, marks, n_repeats=10):
+    def _compute_permutation_importance(self, data, marks, n_repeats=30):
         """
-        Compute permutation-based feature importance.
+        Compute permutation-based feature importance with thorough analysis.
         
-        For each feature, shuffle its values across samples and measure
-        how much the prediction changes. Larger changes = more important feature.
+        For each feature, we:
+        1. Replace feature values with zeros (ablation)
+        2. Replace with mean values
+        3. Shuffle across samples
+        4. Add noise
+        
+        Then measure how much the prediction changes.
         
         NOTE: Excludes the target variable (Solar Power Output) from analysis.
         """
@@ -247,6 +252,12 @@ class SHAPExplainer:
         
         # Identify target column index (last column = Solar Power Output)
         target_idx = n_features - 1  # Target is always last after data loader reordering
+        
+        print(f"\n{'='*60}")
+        print("COMPUTING FEATURE IMPORTANCE (Thorough Analysis)")
+        print(f"{'='*60}")
+        print(f"Samples: {n_samples}, Sequence length: {seq_len}, Features: {n_features}")
+        print(f"Repeats per feature: {n_repeats}")
         
         # Get baseline predictions
         with torch.no_grad():
@@ -261,13 +272,19 @@ class SHAPExplainer:
             
             baseline_output = self.model(x_enc, x_mark, dec_inp, x_mark_dec)
             baseline_pred = baseline_output[:, :, -1].cpu().numpy()  # [batch, pred_len]
-            baseline_mean = baseline_pred.mean()
+            baseline_mse = np.mean(baseline_pred ** 2)
         
-        print(f"\nBaseline prediction mean: {baseline_mean:.4f}")
-        print(f"Baseline prediction std: {baseline_pred.std():.4f}")
-        print(f"\nComputing importance for {n_features - 1} input features (excluding target)...")
+        print(f"\nBaseline Statistics:")
+        print(f"  Prediction mean: {baseline_pred.mean():.4f}")
+        print(f"  Prediction std:  {baseline_pred.std():.4f}")
+        print(f"  Prediction min:  {baseline_pred.min():.4f}")
+        print(f"  Prediction max:  {baseline_pred.max():.4f}")
         
         feature_importance = np.zeros(n_features)
+        feature_importance_details = {}
+        
+        print(f"\nAnalyzing {n_features - 1} input features...")
+        print("-" * 60)
         
         # Only analyze input features (exclude target which is last column)
         for feat_idx in range(n_features):
@@ -275,41 +292,117 @@ class SHAPExplainer:
             
             # Skip target variable
             if feat_name == self.target_feature or feat_idx == target_idx:
-                print(f"  {feat_name}: SKIPPED (target variable)")
+                print(f"  [{feat_idx+1}/{n_features}] {feat_name}: SKIPPED (target variable)")
                 feature_importance[feat_idx] = 0
                 continue
             
-            importance_scores = []
+            # Get feature statistics
+            feat_data = data[:, :, feat_idx]
+            feat_mean = feat_data.mean()
+            feat_std = feat_data.std()
+            
+            importance_scores = {
+                'shuffle': [],
+                'zero': [],
+                'mean_replace': [],
+                'noise': []
+            }
             
             for repeat in range(n_repeats):
-                # Create shuffled data
+                # Method 1: Shuffle across samples
                 data_shuffled = data.copy()
-                
-                # Method 1: Shuffle across samples (preserves temporal structure)
                 perm = np.random.permutation(n_samples)
                 data_shuffled[:, :, feat_idx] = data[perm, :, feat_idx]
                 
-                # Get predictions with shuffled feature
                 with torch.no_grad():
-                    x_enc_shuffled = torch.FloatTensor(data_shuffled).to(self.device)
-                    shuffled_output = self.model(x_enc_shuffled, x_mark, dec_inp, x_mark_dec)
-                    shuffled_pred = shuffled_output[:, :, -1].cpu().numpy()
+                    x_shuffled = torch.FloatTensor(data_shuffled).to(self.device)
+                    pred_shuffled = self.model(x_shuffled, x_mark, dec_inp, x_mark_dec)
+                    pred_shuffled = pred_shuffled[:, :, -1].cpu().numpy()
                 
-                # Importance = MSE change (how much prediction changed)
-                mse_change = np.mean((baseline_pred - shuffled_pred) ** 2)
-                mae_change = np.mean(np.abs(baseline_pred - shuffled_pred))
+                shuffle_change = np.mean((baseline_pred - pred_shuffled) ** 2)
+                importance_scores['shuffle'].append(shuffle_change)
                 
-                # Also measure correlation drop
-                corr_baseline = np.corrcoef(baseline_pred.flatten(), 
-                                           data[:, :, feat_idx].mean(axis=1).repeat(baseline_pred.shape[1]))[0, 1]
+                # Method 2: Replace with zeros
+                data_zero = data.copy()
+                data_zero[:, :, feat_idx] = 0
                 
-                importance_scores.append(mae_change)
+                with torch.no_grad():
+                    x_zero = torch.FloatTensor(data_zero).to(self.device)
+                    pred_zero = self.model(x_zero, x_mark, dec_inp, x_mark_dec)
+                    pred_zero = pred_zero[:, :, -1].cpu().numpy()
+                
+                zero_change = np.mean((baseline_pred - pred_zero) ** 2)
+                importance_scores['zero'].append(zero_change)
+                
+                # Method 3: Replace with mean
+                data_mean = data.copy()
+                data_mean[:, :, feat_idx] = feat_mean
+                
+                with torch.no_grad():
+                    x_mean = torch.FloatTensor(data_mean).to(self.device)
+                    pred_mean = self.model(x_mean, x_mark, dec_inp, x_mark_dec)
+                    pred_mean = pred_mean[:, :, -1].cpu().numpy()
+                
+                mean_change = np.mean((baseline_pred - pred_mean) ** 2)
+                importance_scores['mean_replace'].append(mean_change)
+                
+                # Method 4: Add random noise
+                data_noise = data.copy()
+                noise = np.random.normal(0, feat_std * 0.5, size=feat_data.shape)
+                data_noise[:, :, feat_idx] = feat_data + noise
+                
+                with torch.no_grad():
+                    x_noise = torch.FloatTensor(data_noise).to(self.device)
+                    pred_noise = self.model(x_noise, x_mark, dec_inp, x_mark_dec)
+                    pred_noise = pred_noise[:, :, -1].cpu().numpy()
+                
+                noise_change = np.mean((baseline_pred - pred_noise) ** 2)
+                importance_scores['noise'].append(noise_change)
             
-            feature_importance[feat_idx] = np.mean(importance_scores)
+            # Aggregate importance from all methods
+            avg_shuffle = np.mean(importance_scores['shuffle'])
+            avg_zero = np.mean(importance_scores['zero'])
+            avg_mean = np.mean(importance_scores['mean_replace'])
+            avg_noise = np.mean(importance_scores['noise'])
             
-            # Scale importance to be more interpretable (as percentage of baseline std)
-            scaled_importance = feature_importance[feat_idx] / (baseline_pred.std() + 1e-8) * 100
-            print(f"  {feat_name}: {feature_importance[feat_idx]:.6f} (scaled: {scaled_importance:.2f}%)")
+            # Combined importance (weighted average)
+            combined_importance = (avg_shuffle * 0.3 + avg_zero * 0.3 + 
+                                   avg_mean * 0.25 + avg_noise * 0.15)
+            
+            feature_importance[feat_idx] = combined_importance
+            
+            feature_importance_details[feat_name] = {
+                'shuffle': avg_shuffle,
+                'zero': avg_zero,
+                'mean_replace': avg_mean,
+                'noise': avg_noise,
+                'combined': combined_importance,
+                'feature_mean': feat_mean,
+                'feature_std': feat_std
+            }
+            
+            # Print progress
+            print(f"  [{feat_idx+1}/{n_features}] {feat_name}:")
+            print(f"      Shuffle: {avg_shuffle:.6f}, Zero: {avg_zero:.6f}, "
+                  f"Mean: {avg_mean:.6f}, Noise: {avg_noise:.6f}")
+            print(f"      Combined Importance: {combined_importance:.6f}")
+        
+        # Normalize importance to percentage
+        total_importance = feature_importance.sum()
+        print(f"\n{'='*60}")
+        print("IMPORTANCE SUMMARY")
+        print(f"{'='*60}")
+        
+        if total_importance > 0:
+            for feat_idx in range(n_features):
+                feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+                if feat_name != self.target_feature and feat_idx != target_idx:
+                    pct = (feature_importance[feat_idx] / total_importance) * 100
+                    print(f"  {feat_name}: {pct:.2f}%")
+        
+        # Save detailed results
+        details_df = pd.DataFrame(feature_importance_details).T
+        details_df.to_csv(os.path.join(self.output_dir, 'feature_importance_detailed.csv'))
         
         return feature_importance
     
@@ -1220,10 +1313,12 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32)
     
     # SHAP config
-    parser.add_argument('--num_samples', type=int, default=100, 
-                       help='Number of samples to explain')
-    parser.add_argument('--background_samples', type=int, default=50,
+    parser.add_argument('--num_samples', type=int, default=200, 
+                       help='Number of samples to explain (use more for better results)')
+    parser.add_argument('--background_samples', type=int, default=100,
                        help='Number of background samples for SHAP')
+    parser.add_argument('--n_repeats', type=int, default=30,
+                       help='Number of permutation repeats per feature')
     parser.add_argument('--output_dir', type=str, default='./shap_results/',
                        help='Output directory for SHAP results')
     
