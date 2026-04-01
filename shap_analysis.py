@@ -80,6 +80,11 @@ class SHAPExplainer:
         self.weather_features = ['temp', 'dew', 'humidity', 'winddir', 
                                   'windspeed', 'pressure', 'cloudcover']
         
+        # Input features only (exclude target variable)
+        self.input_features = ['dayofyear', 'timeofday', 'temp', 'dew', 
+                               'humidity', 'winddir', 'windspeed', 'pressure', 'cloudcover']
+        self.target_feature = 'Solar Power Output'
+        
         # Create output directory
         self.output_dir = './shap_results/'
         os.makedirs(self.output_dir, exist_ok=True)
@@ -191,17 +196,35 @@ class SHAPExplainer:
                 direction = np.sign(feature_means - overall_mean)
                 shap_values[i] = feature_importance * direction
         
-        # Create importance DataFrame
-        importance_df = pd.DataFrame({
-            'Feature': self.feature_names[:len(feature_importance)],
-            'Mean |SHAP|': feature_importance
-        }).sort_values('Mean |SHAP|', ascending=False)
+        # Exclude target variable from importance ranking
+        input_feature_mask = [f != self.target_feature for f in self.feature_names[:len(feature_importance)]]
         
-        print("\n" + "="*50)
-        print("FEATURE IMPORTANCE (Mean |SHAP|)")
-        print("="*50)
-        print(importance_df.to_string(index=False))
-        print("="*50)
+        # Create importance DataFrame (excluding target)
+        all_features_df = pd.DataFrame({
+            'Feature': self.feature_names[:len(feature_importance)],
+            'Mean |SHAP|': feature_importance,
+            'Is_Input': input_feature_mask
+        })
+        
+        # Filter to only input features and sort
+        importance_df = all_features_df[all_features_df['Is_Input']].drop(columns=['Is_Input'])
+        importance_df = importance_df.sort_values('Mean |SHAP|', ascending=False)
+        
+        # Calculate percentage contribution
+        total_importance = importance_df['Mean |SHAP|'].sum()
+        if total_importance > 0:
+            importance_df['Contribution %'] = (importance_df['Mean |SHAP|'] / total_importance * 100).round(2)
+        else:
+            importance_df['Contribution %'] = 0
+        
+        print("\n" + "="*60)
+        print("FEATURE IMPORTANCE RANKING (Input Features Only)")
+        print("="*60)
+        print(f"{'Rank':<6}{'Feature':<20}{'Mean |SHAP|':<15}{'Contribution %':<15}")
+        print("-"*60)
+        for rank, (_, row) in enumerate(importance_df.iterrows(), 1):
+            print(f"{rank:<6}{row['Feature']:<20}{row['Mean |SHAP|']:<15.6f}{row['Contribution %']:<15.2f}")
+        print("="*60)
         
         # Save results
         importance_df.to_csv(os.path.join(self.output_dir, 'feature_importance.csv'), index=False)
@@ -216,9 +239,14 @@ class SHAPExplainer:
         
         For each feature, shuffle its values across samples and measure
         how much the prediction changes. Larger changes = more important feature.
+        
+        NOTE: Excludes the target variable (Solar Power Output) from analysis.
         """
         self.model.eval()
         n_samples, seq_len, n_features = data.shape
+        
+        # Identify target column index (last column = Solar Power Output)
+        target_idx = n_features - 1  # Target is always last after data loader reordering
         
         # Get baseline predictions
         with torch.no_grad():
@@ -231,85 +259,124 @@ class SHAPExplainer:
             x_mark_dec = torch.zeros(batch_size, self.args.label_len + self.args.pred_len, 
                                     marks.shape[-1]).to(self.device)
             
-            baseline_pred = self.model(x_enc, x_mark, dec_inp, x_mark_dec)
-            baseline_pred = baseline_pred[:, :, -1].mean(dim=1).cpu().numpy()  # Target column
+            baseline_output = self.model(x_enc, x_mark, dec_inp, x_mark_dec)
+            baseline_pred = baseline_output[:, :, -1].cpu().numpy()  # [batch, pred_len]
+            baseline_mean = baseline_pred.mean()
+        
+        print(f"\nBaseline prediction mean: {baseline_mean:.4f}")
+        print(f"Baseline prediction std: {baseline_pred.std():.4f}")
+        print(f"\nComputing importance for {n_features - 1} input features (excluding target)...")
         
         feature_importance = np.zeros(n_features)
         
+        # Only analyze input features (exclude target which is last column)
         for feat_idx in range(n_features):
             feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+            
+            # Skip target variable
+            if feat_name == self.target_feature or feat_idx == target_idx:
+                print(f"  {feat_name}: SKIPPED (target variable)")
+                feature_importance[feat_idx] = 0
+                continue
+            
             importance_scores = []
             
-            for _ in range(n_repeats):
+            for repeat in range(n_repeats):
                 # Create shuffled data
                 data_shuffled = data.copy()
                 
-                # Shuffle this feature across all samples and time steps
-                shuffled_values = data[:, :, feat_idx].flatten()
-                np.random.shuffle(shuffled_values)
-                data_shuffled[:, :, feat_idx] = shuffled_values.reshape(n_samples, seq_len)
+                # Method 1: Shuffle across samples (preserves temporal structure)
+                perm = np.random.permutation(n_samples)
+                data_shuffled[:, :, feat_idx] = data[perm, :, feat_idx]
                 
                 # Get predictions with shuffled feature
                 with torch.no_grad():
                     x_enc_shuffled = torch.FloatTensor(data_shuffled).to(self.device)
-                    shuffled_pred = self.model(x_enc_shuffled, x_mark, dec_inp, x_mark_dec)
-                    shuffled_pred = shuffled_pred[:, :, -1].mean(dim=1).cpu().numpy()
+                    shuffled_output = self.model(x_enc_shuffled, x_mark, dec_inp, x_mark_dec)
+                    shuffled_pred = shuffled_output[:, :, -1].cpu().numpy()
                 
-                # Importance = how much prediction changed
-                importance = np.mean(np.abs(baseline_pred - shuffled_pred))
-                importance_scores.append(importance)
+                # Importance = MSE change (how much prediction changed)
+                mse_change = np.mean((baseline_pred - shuffled_pred) ** 2)
+                mae_change = np.mean(np.abs(baseline_pred - shuffled_pred))
+                
+                # Also measure correlation drop
+                corr_baseline = np.corrcoef(baseline_pred.flatten(), 
+                                           data[:, :, feat_idx].mean(axis=1).repeat(baseline_pred.shape[1]))[0, 1]
+                
+                importance_scores.append(mae_change)
             
             feature_importance[feat_idx] = np.mean(importance_scores)
-            print(f"  {feat_name}: {feature_importance[feat_idx]:.6f}")
-        
-        # Normalize to sum to 1 for percentage interpretation
-        if feature_importance.sum() > 0:
-            feature_importance_normalized = feature_importance / feature_importance.sum()
-        else:
-            feature_importance_normalized = feature_importance
+            
+            # Scale importance to be more interpretable (as percentage of baseline std)
+            scaled_importance = feature_importance[feat_idx] / (baseline_pred.std() + 1e-8) * 100
+            print(f"  {feat_name}: {feature_importance[feat_idx]:.6f} (scaled: {scaled_importance:.2f}%)")
         
         return feature_importance
     
     def _compute_gradient_shap_values(self, background_data, explain_data):
         """
         Compute gradient-based SHAP values using integrated gradients approach.
+        Excludes target variable from analysis.
         """
         try:
             self.model.eval()
             n_samples, seq_len, n_features = explain_data.shape
+            target_idx = n_features - 1  # Last column is target
+            
+            # Background mean for integrated gradients
+            background_mean = background_data.mean(axis=0)
             
             # We'll compute feature attribution by measuring gradient * input
             shap_values = np.zeros((len(explain_data), n_features))
             
-            for i in range(len(explain_data)):
-                x = torch.FloatTensor(explain_data[i:i+1]).to(self.device)
-                x.requires_grad = True
-                
-                x_mark = torch.zeros(1, seq_len, 4).to(self.device)
-                dec_inp = torch.zeros(1, self.args.label_len + self.args.pred_len,
-                                     n_features).to(self.device)
-                x_mark_dec = torch.zeros(1, self.args.label_len + self.args.pred_len, 4).to(self.device)
-                
-                # Forward pass
-                output = self.model(x, x_mark, dec_inp, x_mark_dec)
-                target_output = output[:, :, -1].mean()  # Mean of target predictions
-                
-                # Backward pass
-                target_output.backward()
-                
-                # Gradient * Input gives attribution
-                if x.grad is not None:
-                    attribution = (x.grad * x).detach().cpu().numpy()
-                    # Aggregate across time steps
-                    shap_values[i] = attribution[0].mean(axis=0)
-                
-                # Clear gradients
-                self.model.zero_grad()
+            print(f"\nComputing gradient attributions for {len(explain_data)} samples...")
             
+            for i in range(len(explain_data)):
+                # Integrated gradients: interpolate between baseline and input
+                n_steps = 20
+                attributions = np.zeros(n_features)
+                
+                for step in range(n_steps):
+                    alpha = step / n_steps
+                    interpolated = background_mean + alpha * (explain_data[i] - background_mean)
+                    
+                    x = torch.FloatTensor(interpolated[np.newaxis, :, :]).to(self.device)
+                    x.requires_grad = True
+                    
+                    x_mark = torch.zeros(1, seq_len, 4).to(self.device)
+                    dec_inp = torch.zeros(1, self.args.label_len + self.args.pred_len,
+                                         n_features).to(self.device)
+                    x_mark_dec = torch.zeros(1, self.args.label_len + self.args.pred_len, 4).to(self.device)
+                    
+                    # Forward pass
+                    output = self.model(x, x_mark, dec_inp, x_mark_dec)
+                    target_output = output[:, :, -1].sum()  # Sum of target predictions
+                    
+                    # Backward pass
+                    target_output.backward()
+                    
+                    # Accumulate gradients
+                    if x.grad is not None:
+                        grad = x.grad.detach().cpu().numpy()[0]
+                        attributions += grad.mean(axis=0) / n_steps
+                    
+                    # Clear gradients
+                    self.model.zero_grad()
+                
+                # Multiply accumulated gradient by (input - baseline)
+                diff = explain_data[i].mean(axis=0) - background_mean.mean(axis=0)
+                shap_values[i] = attributions * diff
+                
+                # Zero out target variable attribution
+                shap_values[i, target_idx] = 0
+            
+            print("Gradient attributions computed.")
             return shap_values
             
         except Exception as e:
             print(f"Gradient SHAP computation failed: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def compute_gradient_shap(self, data_loader, num_samples=100, background_samples=20):
