@@ -549,18 +549,18 @@ IMPORTANT:
     
     def _compute_permutation_importance(self, data, marks, n_repeats=30, targets=None):
         """
-        Compute permutation-based feature importance using ERROR-BASED measurement.
+        Compute permutation-based feature importance using PREDICTION SENSITIVITY.
         
-        This method measures how much model ERROR increases when a feature is perturbed,
-        which is a more accurate measure of feature importance than prediction sensitivity.
+        This method measures how much model PREDICTIONS change when a feature is perturbed.
+        Uses proper normalization based on training data statistics (from scaler).
         
         For each feature, we:
-        1. Shuffle across samples (break temporal relationship)
+        1. Shuffle across samples (break cross-sample patterns)
         2. Replace with mean values (remove variation)
-        3. Measure how much prediction ERROR increases
+        3. Add noise (test sensitivity to perturbations)
         
-        The importance is normalized by feature's normalized range to account for
-        different feature scales after StandardScaler.
+        The importance is normalized using the StandardScaler's std (from training data)
+        to account for different feature scales.
         
         NOTE: Excludes the target variable (Solar Power Output) from analysis.
         """
@@ -568,10 +568,10 @@ IMPORTANT:
         n_samples, seq_len, n_features = data.shape
         
         # Identify target column index (last column = Solar Power Output)
-        target_idx = n_features - 1  # Target is always last after data loader reordering
+        target_idx = n_features - 1
         
         print(f"\n{'='*60}")
-        print("COMPUTING FEATURE IMPORTANCE (Error-Based Analysis)")
+        print("COMPUTING FEATURE IMPORTANCE (Prediction Sensitivity)")
         print(f"{'='*60}")
         print(f"Samples: {n_samples}, Sequence length: {seq_len}, Features: {n_features}")
         print(f"Repeats per feature: {n_repeats}")
@@ -588,39 +588,52 @@ IMPORTANT:
                                     marks.shape[-1]).to(self.device)
             
             baseline_output = self.model(x_enc, x_mark, dec_inp, x_mark_dec)
-            baseline_pred = baseline_output[:, :, -1].cpu().numpy()  # [batch, pred_len]
-        
-        # Use actual target values if available for error-based importance
-        # Otherwise use self-consistency (prediction variance)
-        if targets is not None:
-            baseline_error = np.mean((baseline_pred - targets) ** 2)
-            use_error_based = True
-            print(f"\nUsing ERROR-BASED importance (with actual targets)")
-        else:
-            baseline_error = np.var(baseline_pred)  # Use prediction variance as proxy
-            use_error_based = False
-            print(f"\nUsing PREDICTION-VARIANCE importance (no targets available)")
+            baseline_pred = baseline_output[:, :, -1].cpu().numpy()
         
         print(f"\nBaseline Statistics:")
         print(f"  Prediction mean: {baseline_pred.mean():.4f}")
         print(f"  Prediction std:  {baseline_pred.std():.4f}")
         print(f"  Prediction min:  {baseline_pred.min():.4f}")
         print(f"  Prediction max:  {baseline_pred.max():.4f}")
-        if use_error_based:
-            print(f"  Baseline MSE:    {baseline_error:.4f}")
         
-        # Compute normalized ranges for each feature (for normalization)
-        feature_norm_ranges = {}
+        # Get normalization factors from scaler (training data statistics)
+        # This ensures consistent normalization regardless of test sample distribution
+        if self.scaler_info is not None:
+            print(f"\nUsing StandardScaler std from TRAINING data for normalization")
+            scaler_stds = self.scaler_info.get('stds', {})
+        else:
+            print(f"\nNo scaler info available, using test sample statistics")
+            scaler_stds = {}
+        
+        # Compute feature statistics
+        feature_stats = {}
+        print(f"\nFeature Statistics:")
+        print(f"{'Feature':<20}{'Sample Std':<12}{'Scaler Std':<12}{'Norm Factor':<12}")
+        print("-" * 60)
+        
         for feat_idx in range(n_features):
             feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
             feat_data = data[:, :, feat_idx]
-            # Normalized range = max - min in the data
-            norm_range = feat_data.max() - feat_data.min()
-            feature_norm_ranges[feat_name] = max(norm_range, 0.01)  # Avoid division by zero
-        
-        print(f"\nFeature normalized ranges (for importance scaling):")
-        for feat_name, norm_range in sorted(feature_norm_ranges.items(), key=lambda x: x[1], reverse=True):
-            print(f"  {feat_name}: {norm_range:.4f}")
+            sample_std = feat_data.std()
+            
+            # Use scaler std if available, otherwise use sample std
+            # Scaler std is from training data - more representative
+            scaler_std = scaler_stds.get(feat_name, sample_std)
+            
+            # Normalization factor: features with larger scaler_std have naturally larger variations
+            # We want to measure importance PER UNIT of original (pre-normalized) variation
+            # Since data is normalized, 1 unit in normalized space = scaler_std in original space
+            # Higher scaler_std means the feature varies more in original data
+            norm_factor = 1.0 / max(scaler_std, 0.01)  # Inverse: smaller raw std = more important per unit
+            
+            feature_stats[feat_name] = {
+                'sample_std': sample_std,
+                'scaler_std': scaler_std,
+                'norm_factor': norm_factor
+            }
+            
+            if feat_name != self.target_feature:
+                print(f"  {feat_name:<18}{sample_std:<12.4f}{scaler_std:<12.4f}{norm_factor:<12.6f}")
         
         feature_importance = np.zeros(n_features)
         feature_importance_raw = np.zeros(n_features)
@@ -629,7 +642,6 @@ IMPORTANT:
         print(f"\nAnalyzing {n_features - 1} input features...")
         print("-" * 60)
         
-        # Only analyze input features (exclude target which is last column)
         for feat_idx in range(n_features):
             feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
             
@@ -639,20 +651,19 @@ IMPORTANT:
                 feature_importance[feat_idx] = 0
                 continue
             
-            # Get feature statistics
             feat_data = data[:, :, feat_idx]
             feat_mean = feat_data.mean()
             feat_std = feat_data.std()
-            norm_range = feature_norm_ranges[feat_name]
+            stats = feature_stats[feat_name]
             
             importance_scores = {
                 'shuffle': [],
                 'mean_replace': [],
-                'temporal_shuffle': []
+                'noise': []
             }
             
             for repeat in range(n_repeats):
-                # Method 1: Shuffle across samples (break cross-sample patterns)
+                # Method 1: Shuffle across samples
                 data_shuffled = data.copy()
                 perm = np.random.permutation(n_samples)
                 data_shuffled[:, :, feat_idx] = data[perm, :, feat_idx]
@@ -662,14 +673,11 @@ IMPORTANT:
                     pred_shuffled = self.model(x_shuffled, x_mark, dec_inp, x_mark_dec)
                     pred_shuffled = pred_shuffled[:, :, -1].cpu().numpy()
                 
-                if use_error_based:
-                    shuffle_error = np.mean((pred_shuffled - targets) ** 2)
-                    shuffle_change = max(0, shuffle_error - baseline_error)
-                else:
-                    shuffle_change = np.mean((baseline_pred - pred_shuffled) ** 2)
+                # Measure prediction CHANGE (not error)
+                shuffle_change = np.mean((baseline_pred - pred_shuffled) ** 2)
                 importance_scores['shuffle'].append(shuffle_change)
                 
-                # Method 2: Replace with mean (remove all variation)
+                # Method 2: Replace with mean
                 data_mean = data.copy()
                 data_mean[:, :, feat_idx] = feat_mean
                 
@@ -678,43 +686,35 @@ IMPORTANT:
                     pred_mean = self.model(x_mean, x_mark, dec_inp, x_mark_dec)
                     pred_mean = pred_mean[:, :, -1].cpu().numpy()
                 
-                if use_error_based:
-                    mean_error = np.mean((pred_mean - targets) ** 2)
-                    mean_change = max(0, mean_error - baseline_error)
-                else:
-                    mean_change = np.mean((baseline_pred - pred_mean) ** 2)
+                mean_change = np.mean((baseline_pred - pred_mean) ** 2)
                 importance_scores['mean_replace'].append(mean_change)
                 
-                # Method 3: Temporal shuffle (shuffle within each sample - breaks temporal patterns)
-                data_temp_shuffle = data.copy()
-                for sample_idx in range(n_samples):
-                    perm_time = np.random.permutation(seq_len)
-                    data_temp_shuffle[sample_idx, :, feat_idx] = data[sample_idx, perm_time, feat_idx]
+                # Method 3: Add noise (1 std unit)
+                data_noise = data.copy()
+                noise = np.random.normal(0, 1.0, size=feat_data.shape)  # 1 std in normalized space
+                data_noise[:, :, feat_idx] = feat_data + noise
                 
                 with torch.no_grad():
-                    x_temp = torch.FloatTensor(data_temp_shuffle).to(self.device)
-                    pred_temp = self.model(x_temp, x_mark, dec_inp, x_mark_dec)
-                    pred_temp = pred_temp[:, :, -1].cpu().numpy()
+                    x_noise = torch.FloatTensor(data_noise).to(self.device)
+                    pred_noise = self.model(x_noise, x_mark, dec_inp, x_mark_dec)
+                    pred_noise = pred_noise[:, :, -1].cpu().numpy()
                 
-                if use_error_based:
-                    temp_error = np.mean((pred_temp - targets) ** 2)
-                    temp_change = max(0, temp_error - baseline_error)
-                else:
-                    temp_change = np.mean((baseline_pred - pred_temp) ** 2)
-                importance_scores['temporal_shuffle'].append(temp_change)
+                noise_change = np.mean((baseline_pred - pred_noise) ** 2)
+                importance_scores['noise'].append(noise_change)
             
-            # Aggregate importance from all methods
+            # Aggregate importance
             avg_shuffle = np.mean(importance_scores['shuffle'])
             avg_mean = np.mean(importance_scores['mean_replace'])
-            avg_temporal = np.mean(importance_scores['temporal_shuffle'])
+            avg_noise = np.mean(importance_scores['noise'])
             
-            # Raw importance (before normalization by feature range)
-            raw_importance = (avg_shuffle * 0.35 + avg_mean * 0.35 + avg_temporal * 0.30)
+            # Raw importance (prediction sensitivity)
+            raw_importance = (avg_shuffle * 0.35 + avg_mean * 0.35 + avg_noise * 0.30)
             
-            # NORMALIZE by feature's normalized range
-            # Features with larger normalized ranges naturally show higher raw importance
-            # We divide by norm_range to get "importance per unit variation"
-            normalized_importance = raw_importance / (norm_range ** 0.5)  # sqrt to moderate effect
+            # Normalized importance: adjust by scaler_std
+            # Features with smaller original std (like pressure: 2.0) are more sensitive
+            # because small changes in original units = large changes in normalized space
+            # We multiply by norm_factor to give them appropriate weight
+            normalized_importance = raw_importance * stats['norm_factor']
             
             feature_importance_raw[feat_idx] = raw_importance
             feature_importance[feat_idx] = normalized_importance
@@ -722,45 +722,95 @@ IMPORTANT:
             feature_importance_details[feat_name] = {
                 'shuffle': avg_shuffle,
                 'mean_replace': avg_mean,
-                'temporal_shuffle': avg_temporal,
+                'noise': avg_noise,
                 'raw_importance': raw_importance,
                 'normalized_importance': normalized_importance,
-                'norm_range': norm_range,
-                'feature_mean': feat_mean,
-                'feature_std': feat_std
+                'scaler_std': stats['scaler_std'],
+                'norm_factor': stats['norm_factor']
             }
             
-            # Print progress
             print(f"  [{feat_idx+1}/{n_features}] {feat_name}:")
-            print(f"      Shuffle: {avg_shuffle:.6f}, Mean: {avg_mean:.6f}, Temporal: {avg_temporal:.6f}")
-            print(f"      Raw: {raw_importance:.6f}, Normalized: {normalized_importance:.6f} (range: {norm_range:.2f})")
+            print(f"      Shuffle: {avg_shuffle:.6f}, Mean: {avg_mean:.6f}, Noise: {avg_noise:.6f}")
+            print(f"      Raw: {raw_importance:.6f}, Normalized: {normalized_importance:.6f}")
         
-        # Print both raw and normalized importance
+        # Print summary
         print(f"\n{'='*60}")
-        print("IMPORTANCE SUMMARY (RAW vs NORMALIZED)")
+        print("IMPORTANCE SUMMARY")
         print(f"{'='*60}")
         
         total_raw = feature_importance_raw.sum()
         total_norm = feature_importance.sum()
         
-        print(f"\n{'Feature':<20}{'Raw %':<12}{'Normalized %':<15}{'Norm Range':<12}")
+        print(f"\n{'Feature':<20}{'Raw %':<12}{'Normalized %':<15}{'Scaler Std':<12}")
         print("-" * 60)
         
-        # Sort by normalized importance for display
         sorted_indices = np.argsort(feature_importance)[::-1]
         for feat_idx in sorted_indices:
             feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
             if feat_name != self.target_feature and feat_idx != target_idx:
                 raw_pct = (feature_importance_raw[feat_idx] / total_raw) * 100 if total_raw > 0 else 0
                 norm_pct = (feature_importance[feat_idx] / total_norm) * 100 if total_norm > 0 else 0
-                norm_range = feature_norm_ranges.get(feat_name, 0)
-                print(f"  {feat_name:<18}{raw_pct:>8.2f}%    {norm_pct:>8.2f}%       {norm_range:>8.2f}")
+                scaler_std = feature_stats.get(feat_name, {}).get('scaler_std', 0)
+                print(f"  {feat_name:<18}{raw_pct:>8.2f}%    {norm_pct:>8.2f}%      {scaler_std:>8.2f}")
         
         # Save detailed results
         details_df = pd.DataFrame(feature_importance_details).T
         details_df.to_csv(os.path.join(self.output_dir, 'feature_importance_detailed.csv'))
         
-        # IMPORTANT: Return the NORMALIZED importance
+        # Also compute CORRELATION-WEIGHTED importance
+        # This combines model sensitivity with domain knowledge (correlations)
+        print(f"\n{'='*60}")
+        print("CORRELATION-WEIGHTED IMPORTANCE")
+        print("(Combines model sensitivity with data correlations)")
+        print(f"{'='*60}")
+        
+        if hasattr(self, 'raw_data_stats') and self.raw_data_stats:
+            try:
+                # Load training data to get correlations
+                train_file = os.path.join(self.args.root_path, 'train.csv')
+                if os.path.exists(train_file):
+                    train_df = pd.read_csv(train_file)
+                    
+                    # Compute correlations with target
+                    correlations = {}
+                    for feat in self.input_features:
+                        if feat in train_df.columns and self.target_feature in train_df.columns:
+                            corr = abs(train_df[feat].corr(train_df[self.target_feature]))
+                            correlations[feat] = corr
+                    
+                    # Correlation-weighted importance: raw_importance * |correlation|
+                    corr_weighted_importance = np.zeros(n_features)
+                    
+                    print(f"\n{'Feature':<20}{'Raw %':<12}{'|Corr|':<12}{'Corr-Weighted %':<18}")
+                    print("-" * 60)
+                    
+                    for feat_idx in range(n_features):
+                        feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+                        if feat_name in correlations and feat_name != self.target_feature:
+                            corr = correlations[feat_name]
+                            raw_imp = feature_importance_raw[feat_idx]
+                            # Weight by correlation
+                            corr_weighted_importance[feat_idx] = raw_imp * (corr ** 0.5)
+                    
+                    total_corr_weighted = corr_weighted_importance.sum()
+                    
+                    sorted_cw = np.argsort(corr_weighted_importance)[::-1]
+                    for feat_idx in sorted_cw:
+                        feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+                        if feat_name in correlations and feat_name != self.target_feature:
+                            raw_pct = (feature_importance_raw[feat_idx] / total_raw) * 100 if total_raw > 0 else 0
+                            corr = correlations[feat_name]
+                            cw_pct = (corr_weighted_importance[feat_idx] / total_corr_weighted) * 100 if total_corr_weighted > 0 else 0
+                            print(f"  {feat_name:<18}{raw_pct:>8.2f}%   {corr:>8.4f}      {cw_pct:>8.2f}%")
+                    
+                    # Save correlation-weighted as the primary importance
+                    # This better reflects domain knowledge
+                    print(f"\n  Using CORRELATION-WEIGHTED importance as final ranking")
+                    feature_importance = corr_weighted_importance
+                    
+            except Exception as e:
+                print(f"  Could not compute correlation-weighted importance: {e}")
+        
         return feature_importance
     
     def _compute_gradient_shap_values(self, background_data, explain_data):
