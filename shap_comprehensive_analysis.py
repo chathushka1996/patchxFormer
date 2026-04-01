@@ -1289,13 +1289,26 @@ COMPARISON WITH PLOS ONE LITERATURE:
 def load_model_and_data(args):
     """Load trained model and data loader."""
     
-    # Set device
-    if torch.cuda.is_available() and args.use_gpu:
+    # Check CUDA availability and update args accordingly
+    cuda_available = torch.cuda.is_available()
+    mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    
+    print(f"CUDA available: {cuda_available}, MPS available: {mps_available}")
+    
+    # Update args based on actual hardware availability
+    # This ensures Exp_Basic._acquire_device() uses the correct device
+    if cuda_available and args.use_gpu:
         device = torch.device(f'cuda:{args.gpu}')
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        args.use_gpu = True
+        args.gpu_type = 'cuda'
+    elif mps_available:
         device = torch.device('mps')
+        args.use_gpu = True
+        args.gpu_type = 'mps'
     else:
         device = torch.device('cpu')
+        args.use_gpu = False  # Force CPU mode
+        args.gpu_type = 'cpu'  # Prevent CUDA/MPS attempts
     
     print(f"Using device: {device}")
     

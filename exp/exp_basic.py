@@ -34,12 +34,16 @@ class Exp_Basic(object):
         return None
 
     def _acquire_device(self):
-        if self.args.use_gpu and self.args.gpu_type == 'cuda':
+        # Check actual hardware availability
+        cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+        
+        if self.args.use_gpu and self.args.gpu_type == 'cuda' and cuda_available:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(
                 self.args.gpu) if not self.args.use_multi_gpu else self.args.devices
             device = torch.device('cuda:{}'.format(self.args.gpu))
             print('Use GPU: cuda:{}'.format(self.args.gpu))
-        elif self.args.use_gpu and self.args.gpu_type == 'mps':
+        elif self.args.use_gpu and self.args.gpu_type == 'mps' and mps_available:
             device = torch.device('mps')
             print('Use GPU: mps')
         else:
