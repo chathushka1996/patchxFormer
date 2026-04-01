@@ -474,14 +474,19 @@ IMPORTANT:
         background_data = all_inputs[:background_samples]
         explain_data = all_inputs[background_samples:background_samples + num_samples]
         explain_marks = all_marks[background_samples:background_samples + num_samples]
+        explain_targets = all_targets[background_samples:background_samples + num_samples]
+        
+        # Extract target values for error-based importance
+        # Target is the last column of the prediction horizon
+        target_values = explain_targets[:, :, -1]  # [samples, pred_len]
         
         # Aggregate for display purposes
         aggregated_explain = explain_data.mean(axis=1)
         
-        # Method 1: Permutation-based Feature Importance (more reliable for time series)
-        print("\nComputing permutation-based feature importance...")
+        # Method 1: Permutation-based Feature Importance (ERROR-BASED)
+        print("\nComputing permutation-based feature importance (ERROR-BASED)...")
         feature_importance = self._compute_permutation_importance(
-            explain_data, explain_marks, n_repeats=10
+            explain_data, explain_marks, n_repeats=10, targets=target_values
         )
         
         # Method 2: Gradient-based SHAP values for detailed analysis
@@ -540,17 +545,20 @@ IMPORTANT:
         
         return shap_values, aggregated_explain, feature_importance
     
-    def _compute_permutation_importance(self, data, marks, n_repeats=30):
+    def _compute_permutation_importance(self, data, marks, n_repeats=30, targets=None):
         """
-        Compute permutation-based feature importance with thorough analysis.
+        Compute permutation-based feature importance using ERROR-BASED measurement.
+        
+        This method measures how much model ERROR increases when a feature is perturbed,
+        which is a more accurate measure of feature importance than prediction sensitivity.
         
         For each feature, we:
-        1. Replace feature values with zeros (ablation)
-        2. Replace with mean values
-        3. Shuffle across samples
-        4. Add noise
+        1. Shuffle across samples (break temporal relationship)
+        2. Replace with mean values (remove variation)
+        3. Measure how much prediction ERROR increases
         
-        Then measure how much the prediction changes.
+        The importance is normalized by feature's normalized range to account for
+        different feature scales after StandardScaler.
         
         NOTE: Excludes the target variable (Solar Power Output) from analysis.
         """
@@ -561,7 +569,7 @@ IMPORTANT:
         target_idx = n_features - 1  # Target is always last after data loader reordering
         
         print(f"\n{'='*60}")
-        print("COMPUTING FEATURE IMPORTANCE (Thorough Analysis)")
+        print("COMPUTING FEATURE IMPORTANCE (Error-Based Analysis)")
         print(f"{'='*60}")
         print(f"Samples: {n_samples}, Sequence length: {seq_len}, Features: {n_features}")
         print(f"Repeats per feature: {n_repeats}")
@@ -579,15 +587,41 @@ IMPORTANT:
             
             baseline_output = self.model(x_enc, x_mark, dec_inp, x_mark_dec)
             baseline_pred = baseline_output[:, :, -1].cpu().numpy()  # [batch, pred_len]
-            baseline_mse = np.mean(baseline_pred ** 2)
+        
+        # Use actual target values if available for error-based importance
+        # Otherwise use self-consistency (prediction variance)
+        if targets is not None:
+            baseline_error = np.mean((baseline_pred - targets) ** 2)
+            use_error_based = True
+            print(f"\nUsing ERROR-BASED importance (with actual targets)")
+        else:
+            baseline_error = np.var(baseline_pred)  # Use prediction variance as proxy
+            use_error_based = False
+            print(f"\nUsing PREDICTION-VARIANCE importance (no targets available)")
         
         print(f"\nBaseline Statistics:")
         print(f"  Prediction mean: {baseline_pred.mean():.4f}")
         print(f"  Prediction std:  {baseline_pred.std():.4f}")
         print(f"  Prediction min:  {baseline_pred.min():.4f}")
         print(f"  Prediction max:  {baseline_pred.max():.4f}")
+        if use_error_based:
+            print(f"  Baseline MSE:    {baseline_error:.4f}")
+        
+        # Compute normalized ranges for each feature (for normalization)
+        feature_norm_ranges = {}
+        for feat_idx in range(n_features):
+            feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+            feat_data = data[:, :, feat_idx]
+            # Normalized range = max - min in the data
+            norm_range = feat_data.max() - feat_data.min()
+            feature_norm_ranges[feat_name] = max(norm_range, 0.01)  # Avoid division by zero
+        
+        print(f"\nFeature normalized ranges (for importance scaling):")
+        for feat_name, norm_range in sorted(feature_norm_ranges.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {feat_name}: {norm_range:.4f}")
         
         feature_importance = np.zeros(n_features)
+        feature_importance_raw = np.zeros(n_features)
         feature_importance_details = {}
         
         print(f"\nAnalyzing {n_features - 1} input features...")
@@ -607,16 +641,16 @@ IMPORTANT:
             feat_data = data[:, :, feat_idx]
             feat_mean = feat_data.mean()
             feat_std = feat_data.std()
+            norm_range = feature_norm_ranges[feat_name]
             
             importance_scores = {
                 'shuffle': [],
-                'zero': [],
                 'mean_replace': [],
-                'noise': []
+                'temporal_shuffle': []
             }
             
             for repeat in range(n_repeats):
-                # Method 1: Shuffle across samples
+                # Method 1: Shuffle across samples (break cross-sample patterns)
                 data_shuffled = data.copy()
                 perm = np.random.permutation(n_samples)
                 data_shuffled[:, :, feat_idx] = data[perm, :, feat_idx]
@@ -626,22 +660,14 @@ IMPORTANT:
                     pred_shuffled = self.model(x_shuffled, x_mark, dec_inp, x_mark_dec)
                     pred_shuffled = pred_shuffled[:, :, -1].cpu().numpy()
                 
-                shuffle_change = np.mean((baseline_pred - pred_shuffled) ** 2)
+                if use_error_based:
+                    shuffle_error = np.mean((pred_shuffled - targets) ** 2)
+                    shuffle_change = max(0, shuffle_error - baseline_error)
+                else:
+                    shuffle_change = np.mean((baseline_pred - pred_shuffled) ** 2)
                 importance_scores['shuffle'].append(shuffle_change)
                 
-                # Method 2: Replace with zeros
-                data_zero = data.copy()
-                data_zero[:, :, feat_idx] = 0
-                
-                with torch.no_grad():
-                    x_zero = torch.FloatTensor(data_zero).to(self.device)
-                    pred_zero = self.model(x_zero, x_mark, dec_inp, x_mark_dec)
-                    pred_zero = pred_zero[:, :, -1].cpu().numpy()
-                
-                zero_change = np.mean((baseline_pred - pred_zero) ** 2)
-                importance_scores['zero'].append(zero_change)
-                
-                # Method 3: Replace with mean
+                # Method 2: Replace with mean (remove all variation)
                 data_mean = data.copy()
                 data_mean[:, :, feat_idx] = feat_mean
                 
@@ -650,67 +676,89 @@ IMPORTANT:
                     pred_mean = self.model(x_mean, x_mark, dec_inp, x_mark_dec)
                     pred_mean = pred_mean[:, :, -1].cpu().numpy()
                 
-                mean_change = np.mean((baseline_pred - pred_mean) ** 2)
+                if use_error_based:
+                    mean_error = np.mean((pred_mean - targets) ** 2)
+                    mean_change = max(0, mean_error - baseline_error)
+                else:
+                    mean_change = np.mean((baseline_pred - pred_mean) ** 2)
                 importance_scores['mean_replace'].append(mean_change)
                 
-                # Method 4: Add random noise
-                data_noise = data.copy()
-                noise = np.random.normal(0, feat_std * 0.5, size=feat_data.shape)
-                data_noise[:, :, feat_idx] = feat_data + noise
+                # Method 3: Temporal shuffle (shuffle within each sample - breaks temporal patterns)
+                data_temp_shuffle = data.copy()
+                for sample_idx in range(n_samples):
+                    perm_time = np.random.permutation(seq_len)
+                    data_temp_shuffle[sample_idx, :, feat_idx] = data[sample_idx, perm_time, feat_idx]
                 
                 with torch.no_grad():
-                    x_noise = torch.FloatTensor(data_noise).to(self.device)
-                    pred_noise = self.model(x_noise, x_mark, dec_inp, x_mark_dec)
-                    pred_noise = pred_noise[:, :, -1].cpu().numpy()
+                    x_temp = torch.FloatTensor(data_temp_shuffle).to(self.device)
+                    pred_temp = self.model(x_temp, x_mark, dec_inp, x_mark_dec)
+                    pred_temp = pred_temp[:, :, -1].cpu().numpy()
                 
-                noise_change = np.mean((baseline_pred - pred_noise) ** 2)
-                importance_scores['noise'].append(noise_change)
+                if use_error_based:
+                    temp_error = np.mean((pred_temp - targets) ** 2)
+                    temp_change = max(0, temp_error - baseline_error)
+                else:
+                    temp_change = np.mean((baseline_pred - pred_temp) ** 2)
+                importance_scores['temporal_shuffle'].append(temp_change)
             
             # Aggregate importance from all methods
             avg_shuffle = np.mean(importance_scores['shuffle'])
-            avg_zero = np.mean(importance_scores['zero'])
             avg_mean = np.mean(importance_scores['mean_replace'])
-            avg_noise = np.mean(importance_scores['noise'])
+            avg_temporal = np.mean(importance_scores['temporal_shuffle'])
             
-            # Combined importance (weighted average)
-            combined_importance = (avg_shuffle * 0.3 + avg_zero * 0.3 + 
-                                   avg_mean * 0.25 + avg_noise * 0.15)
+            # Raw importance (before normalization by feature range)
+            raw_importance = (avg_shuffle * 0.35 + avg_mean * 0.35 + avg_temporal * 0.30)
             
-            feature_importance[feat_idx] = combined_importance
+            # NORMALIZE by feature's normalized range
+            # Features with larger normalized ranges naturally show higher raw importance
+            # We divide by norm_range to get "importance per unit variation"
+            normalized_importance = raw_importance / (norm_range ** 0.5)  # sqrt to moderate effect
+            
+            feature_importance_raw[feat_idx] = raw_importance
+            feature_importance[feat_idx] = normalized_importance
             
             feature_importance_details[feat_name] = {
                 'shuffle': avg_shuffle,
-                'zero': avg_zero,
                 'mean_replace': avg_mean,
-                'noise': avg_noise,
-                'combined': combined_importance,
+                'temporal_shuffle': avg_temporal,
+                'raw_importance': raw_importance,
+                'normalized_importance': normalized_importance,
+                'norm_range': norm_range,
                 'feature_mean': feat_mean,
                 'feature_std': feat_std
             }
             
             # Print progress
             print(f"  [{feat_idx+1}/{n_features}] {feat_name}:")
-            print(f"      Shuffle: {avg_shuffle:.6f}, Zero: {avg_zero:.6f}, "
-                  f"Mean: {avg_mean:.6f}, Noise: {avg_noise:.6f}")
-            print(f"      Combined Importance: {combined_importance:.6f}")
+            print(f"      Shuffle: {avg_shuffle:.6f}, Mean: {avg_mean:.6f}, Temporal: {avg_temporal:.6f}")
+            print(f"      Raw: {raw_importance:.6f}, Normalized: {normalized_importance:.6f} (range: {norm_range:.2f})")
         
-        # Normalize importance to percentage
-        total_importance = feature_importance.sum()
+        # Print both raw and normalized importance
         print(f"\n{'='*60}")
-        print("IMPORTANCE SUMMARY")
+        print("IMPORTANCE SUMMARY (RAW vs NORMALIZED)")
         print(f"{'='*60}")
         
-        if total_importance > 0:
-            for feat_idx in range(n_features):
-                feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
-                if feat_name != self.target_feature and feat_idx != target_idx:
-                    pct = (feature_importance[feat_idx] / total_importance) * 100
-                    print(f"  {feat_name}: {pct:.2f}%")
+        total_raw = feature_importance_raw.sum()
+        total_norm = feature_importance.sum()
+        
+        print(f"\n{'Feature':<20}{'Raw %':<12}{'Normalized %':<15}{'Norm Range':<12}")
+        print("-" * 60)
+        
+        # Sort by normalized importance for display
+        sorted_indices = np.argsort(feature_importance)[::-1]
+        for feat_idx in sorted_indices:
+            feat_name = self.feature_names[feat_idx] if feat_idx < len(self.feature_names) else f"Feature_{feat_idx}"
+            if feat_name != self.target_feature and feat_idx != target_idx:
+                raw_pct = (feature_importance_raw[feat_idx] / total_raw) * 100 if total_raw > 0 else 0
+                norm_pct = (feature_importance[feat_idx] / total_norm) * 100 if total_norm > 0 else 0
+                norm_range = feature_norm_ranges.get(feat_name, 0)
+                print(f"  {feat_name:<18}{raw_pct:>8.2f}%    {norm_pct:>8.2f}%       {norm_range:>8.2f}")
         
         # Save detailed results
         details_df = pd.DataFrame(feature_importance_details).T
         details_df.to_csv(os.path.join(self.output_dir, 'feature_importance_detailed.csv'))
         
+        # IMPORTANT: Return the NORMALIZED importance
         return feature_importance
     
     def _compute_gradient_shap_values(self, background_data, explain_data):
