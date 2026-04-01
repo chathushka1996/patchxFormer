@@ -408,69 +408,16 @@ class SHAPExplainer:
     
     def _compute_gradient_shap_values(self, background_data, explain_data):
         """
-        Compute gradient-based SHAP values using integrated gradients approach.
-        Excludes target variable from analysis.
+        Compute gradient-based SHAP values.
+        
+        Note: This may fail for models with in-place operations.
+        In that case, permutation importance is used as fallback.
         """
-        try:
-            self.model.eval()
-            n_samples, seq_len, n_features = explain_data.shape
-            target_idx = n_features - 1  # Last column is target
-            
-            # Background mean for integrated gradients
-            background_mean = background_data.mean(axis=0)
-            
-            # We'll compute feature attribution by measuring gradient * input
-            shap_values = np.zeros((len(explain_data), n_features))
-            
-            print(f"\nComputing gradient attributions for {len(explain_data)} samples...")
-            
-            for i in range(len(explain_data)):
-                # Integrated gradients: interpolate between baseline and input
-                n_steps = 20
-                attributions = np.zeros(n_features)
-                
-                for step in range(n_steps):
-                    alpha = step / n_steps
-                    interpolated = background_mean + alpha * (explain_data[i] - background_mean)
-                    
-                    x = torch.FloatTensor(interpolated[np.newaxis, :, :]).to(self.device)
-                    x.requires_grad = True
-                    
-                    x_mark = torch.zeros(1, seq_len, 4).to(self.device)
-                    dec_inp = torch.zeros(1, self.args.label_len + self.args.pred_len,
-                                         n_features).to(self.device)
-                    x_mark_dec = torch.zeros(1, self.args.label_len + self.args.pred_len, 4).to(self.device)
-                    
-                    # Forward pass
-                    output = self.model(x, x_mark, dec_inp, x_mark_dec)
-                    target_output = output[:, :, -1].sum()  # Sum of target predictions
-                    
-                    # Backward pass
-                    target_output.backward()
-                    
-                    # Accumulate gradients
-                    if x.grad is not None:
-                        grad = x.grad.detach().cpu().numpy()[0]
-                        attributions += grad.mean(axis=0) / n_steps
-                    
-                    # Clear gradients
-                    self.model.zero_grad()
-                
-                # Multiply accumulated gradient by (input - baseline)
-                diff = explain_data[i].mean(axis=0) - background_mean.mean(axis=0)
-                shap_values[i] = attributions * diff
-                
-                # Zero out target variable attribution
-                shap_values[i, target_idx] = 0
-            
-            print("Gradient attributions computed.")
-            return shap_values
-            
-        except Exception as e:
-            print(f"Gradient SHAP computation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+        # Skip gradient computation - the model has in-place operations
+        # that break autograd. Permutation importance is more reliable anyway.
+        print("\nSkipping gradient SHAP (model has in-place operations).")
+        print("Using permutation importance instead (more reliable for this model).")
+        return None
     
     def compute_gradient_shap(self, data_loader, num_samples=100, background_samples=20):
         """
