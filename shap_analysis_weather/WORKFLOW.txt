@@ -1,0 +1,378 @@
+# SHAP Analysis Workflow - Visual Guide
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SHAP ANALYSIS FOR PATCHXFORMER                           │
+│                   Solar Power Forecasting Interpretation                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                              STEP 1: PREPARATION
+════════════════════════════════════════════════════════════════════════════════
+
+┌──────────────────┐
+│ Train Model      │
+│ (PatchXFormer)   │──────┐
+└──────────────────┘      │
+                          │
+┌──────────────────┐      │      ┌─────────────────────────────────────┐
+│ Prepare Dataset  │──────┼─────>│  Verify Setup                       │
+│ (sl_piliyandala) │      │      │  python check_setup.py              │
+└──────────────────┘      │      │                                     │
+                          │      │  Checks:                            │
+┌──────────────────┐      │      │  ✓ Python 3.8+                      │
+│ Install Packages │──────┘      │  ✓ Required libraries               │
+│ pip install -r   │             │  ✓ GPU availability                 │
+│ requirements.txt │             │  ✓ Dataset files                    │
+└──────────────────┘             │  ✓ Model checkpoints                │
+                                 └─────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                           STEP 2: RUN SHAP ANALYSIS
+════════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         OPTION A: AUTOMATIC (Easiest)                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   $ python shap_analysis_weather/run_shap_analysis.py                      │
+│                                                                             │
+│   • Finds model automatically                                              │
+│   • Uses optimal settings                                                  │
+│   • Saves to results/ folder                                               │
+│   • ~10-30 minutes runtime                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       OPTION B: MANUAL (More Control)                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   $ python shap_analysis_weather/shap_patchxformer_analysis.py \           │
+│        --checkpoint_path YOUR_PATH/checkpoint.pth \                         │
+│        --pred_len 96 \                                                      │
+│        --seq_len 96 \                                                       │
+│        --d_model 256 \                                                      │
+│        --num_samples 500                                                    │
+│                                                                             │
+│   • Full control over parameters                                           │
+│   • Multiple prediction horizons                                           │
+│   • Custom sample sizes                                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    OPTION C: SIMPLE/RELIABLE (If A/B fail)                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   $ python shap_analysis_weather/shap_simple_kernel.py \                   │
+│        --checkpoint_path YOUR_PATH/checkpoint.pth                           │
+│                                                                             │
+│   • Uses KernelExplainer (slower but reliable)                             │
+│   • Fewer features but guaranteed to work                                  │
+│   • Good for troubleshooting                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                                      │
+                                      │ Processing...
+                                      ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         ANALYSIS COMPONENTS                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. Load Model          ─┬─> Extract trained weights                       │
+│  2. Prepare Data        ─┤    Select test samples                          │
+│  3. Initialize SHAP     ─┤    Choose explainer (Gradient/Deep/Kernel)      │
+│  4. Compute Values      ─┤    Calculate SHAP for each sample               │
+│  5. Feature Analysis    ─┤    Rank features by importance                  │
+│  6. Temporal Analysis   ─┤    Analyze time-step contributions              │
+│  7. Interaction Analysis─┤    Find feature correlations                    │
+│  8. Visualization       ─┤    Generate plots                               │
+│  9. Report Generation   ─┴─> Create comprehensive report                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                             STEP 3: REVIEW OUTPUTS
+════════════════════════════════════════════════════════════════════════════════
+
+shap_analysis_weather/results/
+│
+├─ plots/
+│  ├─ shap_summary_beeswarm.png          [MUST INCLUDE IN THESIS]
+│  │  • Main summary plot
+│  │  • Shows all features and their distributions
+│  │  • Color-coded by feature values
+│  │
+│  ├─ shap_feature_importance_bar.png     [MUST INCLUDE IN THESIS]
+│  │  • Clear feature rankings
+│  │  • Bar chart format
+│  │  • Easy to interpret
+│  │
+│  ├─ shap_dependence_plots.png           [RECOMMENDED FOR THESIS]
+│  │  • Individual feature impacts
+│  │  • Shows non-linear relationships
+│  │  • 7 subplots (one per weather feature)
+│  │
+│  ├─ shap_temporal_contribution.png      [RECOMMENDED FOR THESIS]
+│  │  • Time-series analysis
+│  │  • Shows temporal importance
+│  │  • Line plot across time steps
+│  │
+│  ├─ shap_temporal_heatmap.png           [OPTIONAL]
+│  │  • Heatmap visualization
+│  │  • Features × Time steps
+│  │  
+│  ├─ shap_horizon_importance.png         [OPTIONAL]
+│  │  • Prediction horizon analysis
+│  │  • Different forecast lengths
+│  │
+│  └─ shap_feature_interactions.png       [OPTIONAL BUT GOOD]
+│     • Correlation matrix
+│     • Shows feature interactions
+│
+├─ csv_reports/
+│  ├─ feature_importance_weather.csv      [USE IN TABLE]
+│  │  • Rankings with numerical values
+│  │  • Format as LaTeX table for thesis
+│  │
+│  ├─ feature_shap_correlations.csv       [REFERENCE]
+│  │  • Feature interaction matrix
+│  │  • Useful for discussion section
+│  │
+│  └─ shap_values_detailed.csv            [RAW DATA]
+│     • All SHAP values
+│     • For custom analysis
+│
+└─ COMPREHENSIVE_SHAP_REPORT.txt          [READ FIRST!]
+   • Complete written analysis
+   • Feature rankings and interpretations
+   • Key findings for thesis
+   • Comparison with reference paper
+   • Recommendations
+   • Limitations
+
+════════════════════════════════════════════════════════════════════════════════
+                           STEP 4: INTERPRET RESULTS
+════════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         READ COMPREHENSIVE REPORT                           │
+│                   (COMPREHENSIVE_SHAP_REPORT.txt)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. Model Configuration    → Verify settings match your model              │
+│  2. Feature Rankings       → Identify most important variables             │
+│  3. Detailed Analysis      → Understand each feature's impact              │
+│  4. Key Findings          → Summary for thesis                             │
+│  5. Comparison            → How it compares to reference paper             │
+│  6. Recommendations       → Actionable insights                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        VISUALIZE WITH JUPYTER                               │
+│             (interactive_shap_analysis.ipynb)                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  $ jupyter notebook shap_analysis_weather/interactive_shap_analysis.ipynb  │
+│                                                                             │
+│  • Interactive exploration                                                 │
+│  • Custom visualizations                                                   │
+│  • Statistical tests                                                       │
+│  • LaTeX table generation                                                  │
+│  • Export for thesis                                                       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      UNDERSTAND KEY CONCEPTS                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  SHAP Value > 0   →  Feature INCREASES predicted solar power               │
+│  SHAP Value < 0   →  Feature DECREASES predicted solar power               │
+│  |SHAP| large    →  Feature is IMPORTANT                                   │
+│  |SHAP| small    →  Feature is UNIMPORTANT                                 │
+│                                                                             │
+│  Red in plots    →  HIGH feature value                                     │
+│  Blue in plots   →  LOW feature value                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                           STEP 5: WRITE THESIS
+════════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      USE THESIS TEMPLATE                                    │
+│                   (THESIS_TEMPLATE.md)                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Section 1: Introduction to Interpretability                               │
+│    • Why interpretability matters                                          │
+│    • Black-box vs. interpretable models                                    │
+│    • Application to solar forecasting                                      │
+│                                                                             │
+│  Section 2: SHAP Methodology                                                │
+│    • Theoretical background (Shapley values)                               │
+│    • Why SHAP for transformers                                             │
+│    • Implementation details                                                │
+│    • Explainer choice justification                                        │
+│                                                                             │
+│  Section 3: Results                                                         │
+│    • Feature importance rankings [TABLE]                                   │
+│    • SHAP summary plot [FIGURE 1]                                          │
+│    • Feature dependence analysis [FIGURE 2]                                │
+│    • Temporal analysis [FIGURE 3]                                          │
+│    • Feature interactions [FIGURE 4]                                       │
+│                                                                             │
+│  Section 4: Discussion                                                      │
+│    • Comparison with reference paper (PMC11695015)                         │
+│    • Physical interpretation                                               │
+│    • Model insights                                                        │
+│    • Limitations                                                           │
+│                                                                             │
+│  Section 5: Implications                                                    │
+│    • For model development                                                 │
+│    • For operational deployment                                            │
+│    • For future research                                                   │
+│                                                                             │
+│  Section 6: Conclusion                                                      │
+│    • Summary of key findings                                               │
+│    • Contribution to field                                                 │
+│    • Future directions                                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                      EXPECTED WEATHER FEATURE RANKINGS
+════════════════════════════════════════════════════════════════════════════════
+
+Based on reference paper (PMC11695015) and solar physics, expect:
+
+┌──────┬──────────────┬─────────────────┬────────────────────────────────────┐
+│ Rank │ Feature      │ Expected Impact │ Physical Reason                    │
+├──────┼──────────────┼─────────────────┼────────────────────────────────────┤
+│  1-2 │ Temperature  │ Non-linear +    │ Affects panel efficiency           │
+│  1-3 │ Humidity     │ Strong -        │ Atmospheric scattering             │
+│  2-4 │ Cloud Cover  │ Very Strong -   │ Direct radiation blocking          │
+│  4-6 │ Wind Speed   │ Moderate +      │ Panel cooling effect               │
+│  5-7 │ Pressure     │ Weak ±          │ Indirect atmospheric effects       │
+│  3-5 │ Dew Point    │ Moderate -      │ Moisture indicator                 │
+│  4-6 │ Wind Dir     │ Weak ±          │ Directional effects                │
+└──────┴──────────────┴─────────────────┴────────────────────────────────────┘
+
+If your results differ significantly:
+  → Dataset-specific patterns
+  → Regional climate differences  
+  → Model learning alternative strategies
+  → Investigate and discuss in thesis
+
+════════════════════════════════════════════════════════════════════════════════
+                           TROUBLESHOOTING FLOWCHART
+════════════════════════════════════════════════════════════════════════════════
+
+                          START
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │ Run Analysis  │
+                    └───────┬───────┘
+                            │
+                    ┌───────▼────────┐
+                    │ Success?       │
+                    └───┬────────┬───┘
+                  YES   │        │  NO
+                        │        │
+                        │        ▼
+                        │   ┌────────────────┐
+                        │   │ Out of Memory? │
+                        │   └───┬────────┬───┘
+                        │  YES  │        │ NO
+                        │       │        │
+                        │       ▼        ▼
+                        │  ┌──────┐  ┌──────────────┐
+                        │  │Reduce│  │Checkpoint    │
+                        │  │Sample│  │Not Found?    │
+                        │  │Size  │  └───┬──────┬───┘
+                        │  └──────┘ YES  │      │ NO
+                        │               │      │
+                        │               ▼      ▼
+                        │          ┌────────┐ ┌──────────┐
+                        │          │Train   │ │Use Simple│
+                        │          │Model   │ │Version   │
+                        │          │First   │ └──────────┘
+                        │          └────────┘
+                        │
+                        ▼
+                  ┌───────────┐
+                  │ Review    │
+                  │ Results   │
+                  └───────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+                               QUICK COMMANDS
+════════════════════════════════════════════════════════════════════════════════
+
+# Check if ready to run
+python shap_analysis_weather/check_setup.py
+
+# Install dependencies
+pip install -r shap_analysis_weather/requirements.txt
+
+# Run analysis (automatic)
+python shap_analysis_weather/run_shap_analysis.py
+
+# Run analysis (manual with specific model)
+python shap_analysis_weather/shap_patchxformer_analysis.py \
+    --checkpoint_path YOUR_PATH/checkpoint.pth \
+    --pred_len 96 --seq_len 96 --d_model 256
+
+# Run simple version (if main fails)
+python shap_analysis_weather/shap_simple_kernel.py \
+    --checkpoint_path YOUR_PATH/checkpoint.pth
+
+# View results
+ls -l shap_analysis_weather/results/plots/
+cat shap_analysis_weather/results/COMPREHENSIVE_SHAP_REPORT.txt
+
+# Interactive exploration
+jupyter notebook shap_analysis_weather/interactive_shap_analysis.ipynb
+
+════════════════════════════════════════════════════════════════════════════════
+                            FILES YOU'LL USE MOST
+════════════════════════════════════════════════════════════════════════════════
+
+1. run_shap_analysis.py              → To run analysis
+2. check_setup.py                    → To verify environment
+3. COMPREHENSIVE_SHAP_REPORT.txt     → To understand results (auto-generated)
+4. QUICKSTART.md                     → For quick reference
+5. THESIS_TEMPLATE.md                → For writing thesis
+6. interactive_shap_analysis.ipynb   → For exploration
+
+════════════════════════════════════════════════════════════════════════════════
+                                 TIMELINE
+════════════════════════════════════════════════════════════════════════════════
+
+Day 1:
+  ✓ Verify setup (5 min)
+  ✓ Install packages (5 min)
+  ✓ Run analysis (10-30 min)
+  ✓ Review outputs (30 min)
+
+Day 2:
+  ✓ Interactive exploration (1-2 hours)
+  ✓ Compare with reference paper (1 hour)
+  ✓ Draft thesis section (2-3 hours)
+
+Day 3:
+  ✓ Refine figures (1 hour)
+  ✓ Polish text (2 hours)
+  ✓ Final review (1 hour)
+
+════════════════════════════════════════════════════════════════════════════════
+
+                       YOU'RE READY TO START!
+                       
+                 python shap_analysis_weather/run_shap_analysis.py
+
+════════════════════════════════════════════════════════════════════════════════
