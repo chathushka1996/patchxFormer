@@ -54,7 +54,7 @@ def run_shap_analysis():
         print("Please train a model first or specify checkpoint path manually.")
         print()
         print("To specify manually, run:")
-        print("python shap_analysis_weather/shap_patchxformer_analysis.py --checkpoint_path YOUR_PATH")
+        print("python shap_patchxformer_analysis.py --checkpoint_path YOUR_PATH")
         return
     
     print(f"Using checkpoint: {checkpoint_path}")
@@ -66,7 +66,7 @@ def run_shap_analysis():
     
     cmd = [
         sys.executable,
-        'shap_analysis_weather/shap_patchxformer_analysis.py',
+        'shap_patchxformer_analysis.py',
         '--checkpoint_path', checkpoint_path,
         '--pred_len', '96',
         '--seq_len', '96',
