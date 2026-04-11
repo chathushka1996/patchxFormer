@@ -12,6 +12,7 @@ from models import PatchXFormer_Variant5_FullModel
 class Exp_Basic(object):
     def __init__(self, args):
         self.args = args
+        self.args.gpu_type = 'cuda'
         self.model_dict = {
             'PatchXFormer': PatchXFormer,
             'PatchXFormer_Variant0_Baseline': PatchXFormer_Variant0_Baseline,

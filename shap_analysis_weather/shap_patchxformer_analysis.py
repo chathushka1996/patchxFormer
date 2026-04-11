@@ -292,8 +292,17 @@ class PatchXFormerSHAPAnalyzer:
             except Exception as e:
                 print(f"Error in batch {i}: {e}")
                 # Use KernelExplainer as fallback for this batch
-                kernel_explainer = shap.KernelExplainer(predict_fn, background_data[:50])
-                batch_shap = kernel_explainer.shap_values(batch)
+                # Reshape to 2D for KernelExplainer (flatten time dimension)
+                batch_flat = batch.reshape(len(batch), -1)
+                background_flat = background_data[:50].reshape(len(background_data[:50]), -1)
+                
+                kernel_explainer = shap.KernelExplainer(
+                    lambda x: predict_fn(x.reshape(-1, *batch.shape[1:])), 
+                    background_flat
+                )
+                batch_shap_flat = kernel_explainer.shap_values(batch_flat)
+                # Reshape back to 3D
+                batch_shap = batch_shap_flat.reshape(batch.shape)
                 shap_values.append(batch_shap)
         
         shap_values = np.concatenate(shap_values, axis=0)
@@ -321,15 +330,18 @@ class PatchXFormerSHAPAnalyzer:
                 # x: [batch, seq_len, features]
                 batch_size = x.shape[0]
                 
+                # Clone input to avoid in-place operation issues
+                x = x.clone()
+                
                 # Create dummy time features (for DeepExplainer compatibility)
                 x_mark = torch.zeros(batch_size, x.shape[1], 4).to(self.device)
                 y_mark = torch.zeros(batch_size, self.args.label_len + self.args.pred_len, 4).to(self.device)
                 
-                # Create decoder input
+                # Create decoder input (clone to avoid in-place issues)
                 dec_inp_zeros = torch.zeros(
                     (batch_size, self.args.pred_len, x.shape[-1])
                 ).float().to(self.device)
-                dec_inp_label = x[:, -self.args.label_len:, :]
+                dec_inp_label = x[:, -self.args.label_len:, :].clone()
                 dec_inp = torch.cat([dec_inp_label, dec_inp_zeros], dim=1)
                 
                 # Make prediction
